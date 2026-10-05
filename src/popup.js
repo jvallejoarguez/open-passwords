@@ -7,6 +7,7 @@ const views = {
 const dot = document.getElementById("dot");
 const pinInput = document.getElementById("pin");
 const pinError = document.getElementById("pin-error");
+const pinBoxes = [...document.querySelectorAll(".code-boxes span")];
 const refreshBtn = document.getElementById("refresh");
 
 function show(name) {
@@ -222,13 +223,14 @@ async function render(state) {
     pageTotpUri = null;
   }
   document.getElementById("lock").hidden = state !== "unlocked";
-  if (state !== "needs_pin") pinInput.value = "";
+  if (state !== "needs_pin") setPin("");
   setDot(state);
   refreshBtn.hidden = state !== "unlocked" && state !== "needs_pin";
   if (state === "no_helper") return show("nohelper");
   if (state === "disconnected") return show("connecting");
   if (state === "needs_pin") {
     show("pin");
+    renderPinBoxes();
     pinInput.focus();
     return;
   }
@@ -240,32 +242,57 @@ async function render(state) {
     show("unlocked");
     renderCodes(revision);
     renderAppLinks(revision);
-    document.getElementById("search").focus();
+    const search = document.getElementById("search");
+    if (search.offsetParent) search.focus();
+    else document.querySelector("#logins button")?.focus();
     return;
   }
   // unknown state must never leave every view hidden (blank popup)
   show("connecting");
 }
 
-function credentialIcon(name) {
+function glyph(className) {
+  const span = document.createElement("span");
+  span.className = className;
+  span.setAttribute("aria-hidden", "true");
+  return span;
+}
+
+function codeGlyph() {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  svg.setAttribute("class", "glyph credential-icon");
+  svg.setAttribute("class", "glyph code-glyph");
   svg.setAttribute("aria-hidden", "true");
   const use = document.createElementNS("http://www.w3.org/2000/svg", "use");
-  use.setAttribute("href", `../icons/ui.svg#${name}`);
+  use.setAttribute("href", "../icons/ui.svg#code");
   svg.appendChild(use);
   return svg;
 }
 
+function itemText(title, subtitle) {
+  const text = document.createElement("span");
+  text.className = "item-text";
+  const main = document.createElement("span");
+  main.textContent = title;
+  text.appendChild(main);
+  if (subtitle) {
+    const sub = document.createElement("span");
+    sub.className = "item-sub";
+    sub.textContent = subtitle;
+    text.appendChild(sub);
+  }
+  return text;
+}
+
 async function renderLogins(revision = viewRevision) {
   const target = pageTarget;
-  document.getElementById("site").textContent = pageTarget ? new URL(pageTarget.url).host : "This page";
+  const host = pageTarget ? new URL(pageTarget.url).host : "";
   const list = document.getElementById("logins");
   const none = document.getElementById("nologins");
   list.innerHTML = "";
   none.hidden = true;
   none.textContent = "No saved passwords for this site.";
   document.getElementById("search-empty").hidden = true;
+  document.querySelector(".search-field").hidden = true;
 
   const res = target ? await pageMessage({ type: "getLogins" }, target) : { ok: false, error: pageError };
   if (revision !== viewRevision || target !== pageTarget) return;
@@ -278,23 +305,23 @@ async function renderLogins(revision = viewRevision) {
     none.hidden = false;
     return;
   }
+  document.querySelector(".search-field").hidden = res.logins.length < 6;
   for (const login of res.logins) {
     const li = document.createElement("li");
     li.dataset.search = (login.username || "").toLowerCase();
-    const u = document.createElement("span");
-    u.className = "u";
-    u.textContent = login.username || "(no username)";
-    u.title = u.textContent;
+    const name = login.username || "(no username)";
     const fill = document.createElement("button");
-    fill.textContent = "Fill";
-    fill.setAttribute("aria-label", `Fill password for ${u.textContent}`);
+    fill.className = "menu-item";
+    fill.title = name;
+    fill.setAttribute("aria-label", `Fill password for ${name}`);
     fill.addEventListener("click", async () => {
       fill.disabled = true;
       const r = await pageMessage({ type: "fillOnPage", loginName: login }, target);
       if (r?.ok && r.filled) window.close();
       else { fill.disabled = false; flashNote(r?.error || "Focus a login field and try again."); }
     });
-    li.append(credentialIcon("key"), u, fill);
+    fill.append(glyph("key-glyph"), itemText(name, host));
+    li.appendChild(fill);
     list.appendChild(li);
   }
   filterLogins();
@@ -311,23 +338,10 @@ async function renderCodes(revision = viewRevision) {
   if (!res?.ok || !res.rows?.length) return;
   for (const row of res.rows) {
     const li = document.createElement("li");
-    const text = document.createElement("span");
-    text.className = "u";
-    const label = document.createElement("span");
-    label.className = "code-label";
-    label.textContent =
-      row.source === "totp"
-        ? row.domain || "Verification code"
-        : "Code from Messages";
-    text.appendChild(label);
-    if (row.username) {
-      const sub = document.createElement("span");
-      sub.className = "subnote";
-      sub.textContent = row.username;
-      text.appendChild(sub);
-    }
+    const label = row.source === "totp" ? row.domain || "Verification Code" : "Code from Messages";
     const fill = document.createElement("button");
-    fill.textContent = "Fill";
+    fill.className = "menu-item";
+    fill.append(codeGlyph(), itemText(label, row.username));
     fill.setAttribute("aria-label", `Fill verification code for ${row.username || row.domain || "this site"}`);
     fill.addEventListener("click", async () => {
       fill.disabled = true;
@@ -336,14 +350,15 @@ async function renderCodes(revision = viewRevision) {
       if (r?.ok && r.filled) return window.close();
       if (r?.ok && r.code) {
         const badge = codeBadge(r.code);
-        fill.replaceWith(badge);
+        fill.classList.add("showing-code");
+        fill.appendChild(badge);
         setTimeout(() => { badge.textContent = "Expired"; }, 30_000);
         return;
       }
       fill.disabled = false;
       flashNote(r?.error ? `Couldn't read the code: ${r.error}` : "Couldn't read the code");
     });
-    li.append(credentialIcon("code"), text, fill);
+    li.appendChild(fill);
     list.appendChild(li);
   }
   list.hidden = false;
@@ -391,32 +406,43 @@ document.getElementById("setup-totp").addEventListener("click", async () => {
   window.close();
 });
 
-document.getElementById("verify").addEventListener("click", async () => {
+function setPin(value) {
+  pinInput.value = value;
+  renderPinBoxes();
+}
+
+function renderPinBoxes() {
+  const pin = pinInput.value;
+  pinBoxes.forEach((box, i) => {
+    box.textContent = pin[i] ?? "";
+    box.classList.toggle("current", i === Math.min(pin.length, 5));
+  });
+}
+
+async function verifyPin() {
   pinError.hidden = true;
   const pin = pinInput.value.trim();
   if (!/^\d{6}$/.test(pin) || pinInput.disabled) return;
   pinInput.disabled = true;
-  document.getElementById("verify").disabled = true;
   const res = await send({ type: "verifyPin", pin });
-  pinInput.value = "";
+  setPin("");
   pinInput.disabled = false;
-  document.getElementById("verify").disabled = false;
   if (res?.ok) render(res.state);
   else {
     // a failed attempt spends the code, so the background put a fresh one on the Mac
     const base = res?.error ?? "Verification failed.";
     pinError.textContent = res?.newCode ? `${base} - enter the new code on your Mac` : base;
     pinError.hidden = false;
-    pinInput.value = "";
     pinInput.focus();
   }
-});
+}
 
 pinInput.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") document.getElementById("verify").click();
+  if (e.key === "Enter") verifyPin();
 });
 pinInput.addEventListener("input", () => {
-  if (pinInput.value.trim().length === 6) document.getElementById("verify").click();
+  setPin(pinInput.value.replace(/\D/g, "").slice(0, 6));
+  if (pinInput.value.length === 6) verifyPin();
 });
 
 let noteTimer = null;
@@ -433,7 +459,7 @@ refreshBtn.addEventListener("click", async () => {
   refreshBtn.classList.add("spinning");
   if (lastState === "needs_pin") {
     pinError.hidden = true;
-    pinInput.value = "";
+    setPin("");
     const res = await send({ type: "requestChallenge" });
     if (res?.ok) render(res.state);
     else {

@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="18 22 84 84">
+  <defs>
+    <path id="key" d="M64 62.3A20 20 0 1 1 78 63.1V72l-4 4 4 4v4l-4 4 4 4v6l-7 7-7-7Z"/>
+    <mask id="behind-green" maskUnits="userSpaceOnUse" x="0" y="0" width="128" height="128">
+      <rect width="128" height="128" fill="#fff"/>
+      <use href="#key" transform="translate(-12 0)" stroke="#000" stroke-width="11"/>
+      <use href="#key" stroke="#000" stroke-width="11"/>
+    </mask>
+    <mask id="behind-blue" maskUnits="userSpaceOnUse" x="0" y="0" width="128" height="128">
+      <rect width="128" height="128" fill="#fff"/>
+      <use href="#key" stroke="#000" stroke-width="11"/>
+    </mask>
+    <mask id="hole" maskUnits="userSpaceOnUse" x="0" y="0" width="128" height="128">
+      <rect width="128" height="128" fill="#fff"/>
+      <circle cx="76" cy="38" r="7" fill="#000"/>
+    </mask>
+    <mask id="slash" maskUnits="userSpaceOnUse" x="0" y="0" width="128" height="128">
+      <rect width="128" height="128" fill="#fff"/>
+      <path d="M26 26 98 106" stroke="#000" stroke-width="22"/>
+    </mask>
+  </defs>
+  <g fill="#6e6e73" mask="url(#slash)">
+    <g mask="url(#behind-green)"><use href="#key" transform="translate(-24 0)"/></g>
+    <g mask="url(#behind-blue)"><use href="#key" transform="translate(-12 0)"/></g>
+    <g mask="url(#hole)"><use href="#key"/></g>
+  </g>
+  <path d="M26 26 98 106" stroke="#6e6e73" stroke-width="8" stroke-linecap="round"/>
+</svg>

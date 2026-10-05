@@ -12,8 +12,8 @@
     "default_popup": "src/popup.html",
     "default_title": "Open Passwords — Javier",
     "default_icon": {
-      "16": "icons/icon16.png",
-      "32": "icons/icon32.png"
+      "16": "icons/toolbar-off16.png",
+      "32": "icons/toolbar-off32.png"
     }
   },
   "commands": {
@@ -78,7 +78,8 @@
     {
       "resources": [
         "fonts/*.woff2",
-        "icons/icon32.png"
+        "icons/keys.svg",
+        "icons/key.svg"
       ],
       "matches": [
         "*://*/*"

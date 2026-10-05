@@ -20,7 +20,7 @@ window.chrome = {
       let result = { ok: true };
       if (msg.type === 'getState' || msg.type === 'requestChallenge') result = { ok: true, state, caps: { newPasswordSheet: true } };
       if (msg.type === 'getPageTarget') result.target = target;
-      if (msg.type === 'getLogins') result.logins = params.has('empty') ? [] : [{ username: 'personal@example.test' }, { username: 'work@example.test' }];
+      if (msg.type === 'getLogins') result.logins = params.has('empty') ? [] : (params.has('many') ? ['a', 'b', 'c', 'd', 'e', 'f'] : ['personal', 'work']).map(name => ({ username: name + '@example.test' }));
       if (msg.type === 'getOneTimeCodes') result.rows = params.has('empty') ? [] : [{ id: 'dummy-otp', source: 'totp', username: 'personal@example.test', domain: 'example.test' }];
       if (msg.type === 'verifyPin') { state = 'unlocked'; result.state = state; }
       if (msg.type === 'fillOnPage' || msg.type === 'fillOneTimeCode') {
@@ -39,7 +39,8 @@ const routes = new Map([
   ['/popup.js', ['src/popup.js', 'text/javascript']],
   ['/icons/icon48.png', ['icons/icon48.png', 'image/png']],
   ['/icons/keychain.svg', ['icons/keychain.svg', 'image/svg+xml']],
-  ['/icons/keychain-mini.svg', ['icons/keychain-mini.svg', 'image/svg+xml']],
+  ['/icons/keys.svg', ['icons/keys.svg', 'image/svg+xml']],
+  ['/icons/key.svg', ['icons/key.svg', 'image/svg+xml']],
   ['/icons/ui.svg', ['icons/ui.svg', 'image/svg+xml']],
 ]);
 const server = createServer((req, res) => {

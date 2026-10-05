@@ -11,6 +11,8 @@ client.onStateChange((s) => {
     pwCacheClear();
     clearEntries(otpByDocument);
   }
+  const icon = s === State.Unlocked ? "toolbar" : "toolbar-off";
+  chrome.action.setIcon({ path: { 16: `/icons/${icon}16.png`, 32: `/icons/${icon}32.png` } });
   broadcast({ type: "state", state: s });
 });
 

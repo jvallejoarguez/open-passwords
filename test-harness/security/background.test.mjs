@@ -52,7 +52,7 @@ function setup() {
       onMessage: { addListener(fn) { listener = fn; } }, onInstalled: event(), onStartup: event(),
       sendMessage: async () => ({}), getPlatformInfo() {},
     },
-    action: { async openPopup() {} },
+    action: { async openPopup() {}, async setIcon() {} },
     alarms: { create() {}, onAlarm: event() }, commands: { onCommand: event() },
     tabs: {
       query: async () => [active], onRemoved: event(),

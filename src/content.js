@@ -320,7 +320,7 @@ function setActiveNav(i) {
   navIndex = i;
   navItems.forEach((it, idx) => {
     const on = idx === i;
-    it.el.style.background = on ? "rgba(10,132,255,0.18)" : "transparent";
+    it.el.style.background = on ? "rgba(128,128,128,0.2)" : "transparent";
     if (on) it.el.setAttribute("aria-selected", "true");
     else it.el.removeAttribute("aria-selected");
   });
@@ -431,6 +431,16 @@ function ensureFontFace() {
   } catch {}
 }
 
+function maskGlyph(file, width, height) {
+  const glyph = document.createElement("span");
+  glyph.setAttribute("aria-hidden", "true");
+  Object.assign(glyph.style, { display: "block", flex: "none", width, height, background: "currentColor", opacity: "0.55" });
+  const mask = `url("${chrome.runtime.getURL(`icons/${file}`)}") center / contain no-repeat`;
+  glyph.style.setProperty("-webkit-mask", mask);
+  glyph.style.setProperty("mask", mask);
+  return glyph;
+}
+
 // solid Canvas stays as the fallback where light-dark() is unsupported
 function glassify(el) {
   Object.assign(el.style, {
@@ -438,7 +448,7 @@ function glassify(el) {
     color: "CanvasText",
     colorScheme: "light dark",
     border: "1px solid rgba(128,128,128,0.35)",
-    borderRadius: "14px",
+    borderRadius: "10px",
     boxShadow: "0 12px 32px rgba(0,0,0,0.22), 0 2px 8px rgba(0,0,0,0.10)",
     backdropFilter: "blur(24px) saturate(180%)",
     webkitBackdropFilter: "blur(24px) saturate(180%)",
@@ -467,21 +477,18 @@ function buildSuggestionBox(field) {
     zIndex: "2147483647",
   });
   const header = document.createElement("div");
-  const icon = document.createElement("img");
-  icon.src = chrome.runtime.getURL("icons/icon32.png");
-  icon.alt = "";
-  Object.assign(icon.style, { width: "16px", height: "16px", flex: "none" });
   const title = document.createElement("span");
-  title.textContent = "Open Passwords";
-  header.append(icon, title);
+  title.textContent = "Passwords";
+  title.style.opacity = "0.55";
+  header.append(maskGlyph("keys.svg", "14px", "14px"), title);
   Object.assign(header.style, {
     display: "flex",
     alignItems: "center",
-    gap: "7px",
-    padding: "10px 12px",
+    gap: "6px",
+    padding: "6px 10px",
     fontSize: "12px",
     fontWeight: "600",
-    borderBottom: "1px solid rgba(128,128,128,0.18)",
+    borderBottom: "1px solid rgba(128,128,128,0.25)",
   });
   box.appendChild(header);
   document.body.appendChild(box);
@@ -591,14 +598,17 @@ function fillGeneratedPassword(field, pw) {
 function appendLoginRows(box, field, logins) {
   for (const login of logins) {
     const row = document.createElement("div");
-    row.textContent = login.username || "(no username)";
-    Object.assign(row.style, {
-      padding: "11px 14px",
-      cursor: "pointer",
-      whiteSpace: "nowrap",
-      overflow: "hidden",
-      textOverflow: "ellipsis",
-    });
+    Object.assign(row.style, { display: "flex", alignItems: "center", gap: "10px", padding: "6px 10px", cursor: "pointer" });
+    const text = document.createElement("div");
+    Object.assign(text.style, { minWidth: "0", whiteSpace: "nowrap" });
+    const name = document.createElement("div");
+    name.textContent = login.username || "(no username)";
+    const site = document.createElement("div");
+    site.textContent = location.hostname;
+    Object.assign(site.style, { fontSize: "12px", opacity: "0.55" });
+    for (const line of [name, site]) Object.assign(line.style, { overflow: "hidden", textOverflow: "ellipsis" });
+    text.append(name, site);
+    row.append(maskGlyph("key.svg", "16px", "22px"), text);
     registerRow(row, () => {
       removeSuggestion();
       fillAnchor = field;

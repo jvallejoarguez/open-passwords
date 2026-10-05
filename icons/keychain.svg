@@ -1,27 +1,17 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" fill="none">
   <defs>
-    <linearGradient id="tile" x1="64" y1="4" x2="64" y2="124" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#57C8FF"/><stop offset=".48" stop-color="#168BFA"/><stop offset="1" stop-color="#0060DF"/>
-    </linearGradient>
-    <linearGradient id="silver" x1="31" y1="51" x2="69" y2="103" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#E7F7FF"/><stop offset="1" stop-color="#9ECFFF"/>
-    </linearGradient>
-    <linearGradient id="white" x1="67" y1="30" x2="67" y2="99" gradientUnits="userSpaceOnUse">
-      <stop stop-color="white"/><stop offset="1" stop-color="#E6F5FF"/>
-    </linearGradient>
+    <linearGradient id="tile" x1="64" y1="4" x2="64" y2="124" gradientUnits="userSpaceOnUse"><stop stop-color="#fff"/><stop offset="1" stop-color="#f0f0f3"/></linearGradient>
+    <linearGradient id="yellow" x1="0" y1="24" x2="0" y2="106" gradientUnits="userSpaceOnUse"><stop stop-color="#ffd84d"/><stop offset="1" stop-color="#f7b500"/></linearGradient>
+    <linearGradient id="green" x1="0" y1="24" x2="0" y2="106" gradientUnits="userSpaceOnUse"><stop stop-color="#6cdc74"/><stop offset="1" stop-color="#2fb34a"/></linearGradient>
+    <linearGradient id="blue" x1="0" y1="24" x2="0" y2="106" gradientUnits="userSpaceOnUse"><stop stop-color="#55c3ff"/><stop offset="1" stop-color="#1769f5"/></linearGradient>
+    <path id="key" d="M64 62.3A20 20 0 1 1 78 63.1V72l-4 4 4 4v4l-4 4 4 4v6l-7 7-7-7Z"/>
   </defs>
-  <rect x="4" y="4" width="120" height="120" rx="29" fill="url(#tile)"/>
-  <rect x="4.75" y="4.75" width="118.5" height="118.5" rx="28.25" stroke="white" stroke-opacity=".28" stroke-width="1.5"/>
-  <g transform="rotate(8 54 52)">
-    <path d="M54 34a18 18 0 0 0-6 35v30a4 4 0 0 0 4 4h11v-9h-5v-8h5v-9h-5v-8a18 18 0 0 0-4-35Z" fill="#004CB7" opacity=".18" transform="translate(0 2)"/>
-    <path d="M54 34a18 18 0 0 0-6 35v30a4 4 0 0 0 4 4h11v-9h-5v-8h5v-9h-5v-8a18 18 0 0 0-4-35Z" fill="url(#silver)"/>
-    <circle cx="54" cy="50" r="7" fill="#1887EC"/>
-    <path d="M50 76v22" stroke="white" stroke-opacity=".5" stroke-width="2" stroke-linecap="round"/>
-  </g>
-  <g transform="rotate(38 77 48)">
-    <path d="M77 28a20 20 0 0 0-6 39v32a4 4 0 0 0 4 4h12V92h-6v-9h6V72h-6v-5a20 20 0 0 0-4-39Z" fill="#004CB7" opacity=".2" transform="translate(0 2)"/>
-    <path d="M77 28a20 20 0 0 0-6 39v32a4 4 0 0 0 4 4h12V92h-6v-9h6V72h-6v-5a20 20 0 0 0-4-39Z" fill="url(#white)"/>
-    <circle cx="77" cy="46" r="8" fill="#238FF4"/>
-    <path d="M74 73v25" stroke="#A5D8FF" stroke-width="2" stroke-linecap="round"/>
+  <rect x="4" y="4" width="120" height="120" rx="28" fill="url(#tile)"/>
+  <rect x="4.5" y="4.5" width="119" height="119" rx="27.5" stroke="#000" stroke-opacity=".08"/>
+  <g transform="translate(6 0)" stroke="#fff" stroke-width="5" paint-order="stroke">
+    <use href="#key" x="-24" fill="url(#yellow)" stroke="none"/>
+    <use href="#key" x="-12" fill="url(#green)"/>
+    <use href="#key" fill="url(#blue)"/>
+    <circle cx="76" cy="38" r="5.5" fill="#fff" stroke="none"/>
   </g>
 </svg>

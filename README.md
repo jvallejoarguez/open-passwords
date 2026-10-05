@@ -19,7 +19,7 @@ This fork starts from [Open Passwords v0.49.0](https://github.com/ManiForoughi2/
 - Password and OTP caches have scheduled expiration, and session changes invalidate in-flight secret reads and clear these caches. See [SECURITY.md](SECURITY.md) for limits.
 - Refresh reloads the lists and clears cached credentials; it does not fill a password.
 - The compact popup has current-site login search, arrow-key selection, Enter to fill, a Lock action, and collapsible settings. Search covers this site's logins, not the entire vault. `⌘⇧.` opens the existing inline chooser.
-- The Keychain-inspired interface follows the system's light/dark appearance, with an original SVG key icon and matching controls. Editable artwork is in `icons/keychain.svg`, `icons/keychain-mini.svg`, and `icons/ui.svg`; the 16/32 px toolbar PNGs use the simplified mini icon, and the 48/128 px PNGs use the full artwork.
+- The popup, toolbar icon, and inline menu follow the iCloud Passwords extension: an "Enable Password AutoFill" six-box code entry, menu rows showing a key with the username and site, and a gray three-key toolbar glyph that shows a slash until the vault unlocks. They follow the system light/dark appearance. The artwork is original SVG: `icons/keychain.svg` is the app tile (rendered to `icon*.png`), and `icons/keys.svg`, `icons/keys-off.svg`, and `icons/key.svg` are the glyphs (rendered to `toolbar*.png`).
 
 **This is a personal code review and hardening pass, not an independent security certification.** It still handles plaintext credentials during fills. Review upstream changes before merging them; unpacked installations do not auto-update from GitHub. After an update, reload open login pages so their content scripts use the new version.
 
@@ -31,7 +31,7 @@ node test-harness/automation/pin-session.test.mjs
 node test-harness/security/preview.mjs
 ```
 
-The first two commands use mock browser/native interfaces and dummy credentials. The preview serves the actual popup with dummy APIs at `http://127.0.0.1:8787/`; add `?pin`, `?empty`, `?connecting`, or `?nohelper` to inspect those views. None accesses a real vault. See [security coverage](SECURITY.md#verification-and-limits) before interpreting passing checks.
+The first two commands use mock browser/native interfaces and dummy credentials. The preview serves the actual popup with dummy APIs at `http://127.0.0.1:8787/`; add `?pin`, `?empty`, `?many`, `?connecting`, or `?nohelper` to inspect those views. None accesses a real vault. See [security coverage](SECURITY.md#verification-and-limits) before interpreting passing checks.
 
 ## Upstream background
 
