@@ -2,13 +2,37 @@
   <img src="icons/icon128.png" width="96" height="96" alt="Open Passwords logo">
 </p>
 
-<h1 align="center">Open Passwords</h1>
+<h1 align="center">Open Passwords — Javier</h1>
 
 <p align="center">
   A Chrome/Edge/Brave extension that talks to Apple Passwords (iCloud Keychain) on macOS and autofills your logins, without the official extension's headaches.
 </p>
 
 ---
+
+## Personal fork · v0.50.0
+
+This fork starts from [Open Passwords v0.49.0](https://github.com/ManiForoughi2/open-passwords/tree/7bd3a9bb98e26522a4cdff825c8b06a6e7f6f092). It keeps the Apple Passwords backend and protocol implementation, with these changes:
+
+- Password and verification-code fills are bound to the requesting browser document, complete origin, and page URL. The popup fills the top-level page; use the inline chooser inside a supported iframe.
+- Pairing takes place in the extension toolbar popup. Web pages cannot request or submit pairing codes through content-script messages.
+- Password and OTP caches have scheduled expiration, and session changes invalidate in-flight secret reads and clear these caches. See [SECURITY.md](SECURITY.md) for limits.
+- Refresh reloads the lists and clears cached credentials; it does not fill a password.
+- The compact popup has current-site login search, arrow-key selection, Enter to fill, a Lock action, and collapsible settings. Search covers this site's logins, not the entire vault. `⌘⇧.` opens the existing inline chooser.
+
+**This is a personal code review and hardening pass, not an independent security certification.** It still handles plaintext credentials during fills. Review upstream changes before merging them; unpacked installations do not auto-update from GitHub. After an update, reload open login pages so their content scripts use the new version.
+
+### Verification
+
+```bash
+node --test test-harness/security/*.test.*
+node test-harness/automation/pin-session.test.mjs
+node test-harness/security/preview.mjs
+```
+
+The first two commands use mock browser/native interfaces and dummy credentials. The preview serves the actual popup with dummy APIs at `http://127.0.0.1:8787/`; add `?pin` for the pairing view. None accesses a real vault. See [security coverage](SECURITY.md#verification-and-limits) before interpreting passing checks.
+
+## Upstream background
 
 Apple's official iCloud Passwords extension for Chrome sits at 2.3 out of 5 across ~2,600 ratings. It forgets your session and re-asks for the 6-digit code every few hours, throws an "Enable AutoFill" balloon on top of one-time-code boxes, and fights Chrome's own password manager. I got tired of it and wrote a replacement client.
 
@@ -24,7 +48,7 @@ It connects to the live vault, asks for the code once, lists the logins for the 
 | "Enable AutoFill" balloon on every field, including OTP boxes | the inline dropdown shows up only on genuine login fields. one-time-code boxes get nothing unless the vault actually holds a [verification code](#verification-codes-the-passwords-app-and-a-shortcut) for the site ([content.js](src/content.js)) |
 | 100% CPU / typing lag | the content script does zero per-keystroke work, it only reacts when you focus a login field |
 | re-downloads every image on hover to scan for QR codes | there's no image or QR scanning here at all |
-| fills the wrong field or wrong origin | fills are pinned to the page's origin and skip hidden/clickjacked fields |
+| fills the wrong field or wrong origin | fills are pinned to the selected document, complete origin, and URL; upstream form-selection heuristics are retained |
 
 You fill two ways: the inline dropdown when you focus a login field, or the toolbar popup. Both run through the same origin-checked, OS-authorized path. New or changed passwords get offered to Apple's own save sheet, nothing is stored without a click.
 
@@ -61,21 +85,21 @@ Borrowing Apple's key is the only way in. The evidence is in [VERIFICATION.md](V
 ## Requirements
 
 - macOS 14 (Sonoma) or later, signed into iCloud with Passwords on
-- Chrome, Edge, or Brave (any Chromium browser that loads unpacked extensions should do, those three are what I've run it on)
+- Chrome, Edge, or Brave based on Chromium 127 or later (required for the inline unlock action to open the toolbar popup)
 - Apple's official iCloud Passwords extension removed or disabled
 
 ## Install
 
 ```bash
-git clone https://github.com/ManiForoughi2/open-passwords.git
+git clone https://github.com/jvallejoarguez/open-passwords.git javier-passwords
 ```
 
 1. disable Apple's official iCloud Passwords extension (it claims the same ID)
 2. open `chrome://extensions` and turn on Developer mode (top right)
-3. click Load unpacked and pick the `open-passwords` folder
+3. click Load unpacked and pick the `javier-passwords` folder
 4. confirm the ID reads `pejdijmoenmkgeppbflobdenhhabjlaj`
 5. click the toolbar icon, type the 6-digit code your Mac shows, done
-6. go to a site with a saved login and fill it
+6. reload open login pages, then go to a site with a saved login and fill it
 
 ### Optional: hide the browser's own password manager
 
@@ -134,6 +158,8 @@ The extension asks for a code only when no live code exists. After a failed atte
 A code expires after 3 minutes. After that, the extension asks your Mac for a new code instead of checking the old one.
 
 ## Security notes
+
+Read the fork's [security model and validation limits](SECURITY.md).
 
 - the session key lives only in the worker's memory and is never written to disk
 - every password query is AES-GCM encrypted end to end with the helper

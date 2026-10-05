@@ -1,5 +1,5 @@
 // OTP inputs are never fillable login fields, that misclassification is apple's balloon-on-every-OTP bug
-console.log("[Open Passwords] content script v0.49.0 loaded");
+
 
 const OTP_AUTOCOMPLETE = /one-time-code/i;
 const OTP_HINT = /\b(otp|one[\s-]?time|verification|2fa|mfa|sms[\s-]?code|auth[\s-]?code|security[\s-]?code|passcode)\b/i;
@@ -202,18 +202,22 @@ function domDistance(a, b) {
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg?.type !== "fill") return false;
-  // host must match the origin the background pinned the cred to, so site A's cred never lands on site B
+  // Delivery is pinned to a browser document and rechecks the complete page URL here.
   if (sender.id !== chrome.runtime.id) {
     sendResponse({ ok: false, filled: false, error: "forbidden" });
     return true;
   }
-  if (msg.expectedHost && location.hostname.toLowerCase() !== msg.expectedHost) {
+  if (!msg.expectedOrigin || location.origin !== msg.expectedOrigin || location.href !== msg.expectedUrl) {
     sendResponse({ ok: false, filled: false, error: "origin mismatch" });
     return true;
   }
   const filled = fillCredentials(msg.username, msg.password, liveField(fillAnchor));
   // a submit right after must not re-offer to save this existing login
-  if (filled) lastAutofill = { host: location.hostname, username: msg.username, password: msg.password, at: Date.now() };
+  if (filled) {
+    lastAutofill = { host: location.hostname, username: msg.username, password: msg.password, at: Date.now() };
+    clearTimeout(autofillTimer);
+    autofillTimer = setTimeout(() => { lastAutofill = null; }, 120_000);
+  }
   sendResponse({ ok: true, filled });
   return true;
 });
@@ -221,8 +225,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (sender.id !== chrome.runtime.id) return false;
   switch (msg?.type) {
+    case "getFrameContext":
+      chrome.runtime.sendMessage({ type: "getFrameContext" }).then(sendResponse).catch(() => sendResponse({ ok: false }));
+      return true;
     case "fillOtp": {
-      if (msg.expectedHost && location.hostname.toLowerCase() !== msg.expectedHost) {
+      if (!msg.expectedOrigin || location.origin !== msg.expectedOrigin || location.href !== msg.expectedUrl) {
         sendResponse({ ok: false, filled: false, error: "origin mismatch" });
         return true;
       }
@@ -244,11 +251,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       onShortcut();
       return false;
     }
-    case "unlocked": {
-      // auto-pair opened the vault while the inline PIN box was up
-      if (suggestionEl && typeof lockedResume === "function") lockedResume();
-      return false;
-    }
     case "findTotpUri": {
       if (window !== window.top) return false;
       sendResponse({ uris: findTotpUris() });
@@ -260,7 +262,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 let fillAnchor = null;
 let otpAnchor = null;
-let lockedResume = null;
+let autofillTimer;
+let generatedTimer;
 // suppresses a save offer for a login just filled from the vault
 let lastAutofill = null;
 // its submit always offers to save (reset page / password change)
@@ -308,7 +311,6 @@ function removeSuggestion() {
   anchorField = null;
   navItems = [];
   navIndex = -1;
-  lockedResume = null;
 }
 
 function setActiveNav(i) {
@@ -472,127 +474,15 @@ function buildSuggestionBox(field) {
   return box;
 }
 
-async function buildLockedSuggestion(field, onUnlock) {
+async function buildLockedSuggestion(field) {
   const box = buildSuggestionBox(field);
-
-  const msg = document.createElement("div");
-  msg.textContent = "Enter the code shown on your Mac";
-  Object.assign(msg.style, { padding: "8px 10px 4px", fontSize: "12px", opacity: "0.7" });
-  box.appendChild(msg);
-
-  const input = document.createElement("input");
-  input.type = "text";
-  input.inputMode = "numeric";
-  input.maxLength = 6;
-  input.placeholder = "------";
-  Object.assign(input.style, {
-    margin: "4px 12px 8px",
-    width: "calc(100% - 24px)",
-    padding: "9px",
-    font: `16px ${UI_FONT}`,
-    letterSpacing: "5px",
-    textAlign: "center",
-    border: "1px solid rgba(128,128,128,0.35)",
-    borderRadius: "10px",
-    background: "Canvas",
-    color: "CanvasText",
-    boxSizing: "border-box",
-  });
-  input.style.setProperty("background", "light-dark(rgba(255,255,255,0.55), rgba(0,0,0,0.28))");
-  box.appendChild(input);
-
-  const status = document.createElement("div");
-  Object.assign(status.style, { padding: "0 10px 8px", fontSize: "12px", color: "#ff453a", minHeight: "14px" });
-  box.appendChild(status);
-
-  input.addEventListener("mousedown", (e) => e.stopPropagation());
-
-  const setStatus = (text, isError) => {
-    status.style.color = isError ? "#ff453a" : "rgba(128,128,128,0.9)";
-    status.textContent = text;
-  };
-
-  const again = document.createElement("div");
-  again.textContent = "Get a new code";
-  Object.assign(again.style, {
-    padding: "0 12px 10px",
-    fontSize: "12px",
-    opacity: "0.7",
-    cursor: "pointer",
-    textDecoration: "underline",
-  });
-  again.addEventListener("mousedown", (e) => e.stopPropagation());
-  again.addEventListener("click", async () => {
-    setStatus("Asking your Mac for a new code...", false);
-    input.value = "";
-    await chrome.runtime.sendMessage({ type: "requestChallenge" }).catch(() => {});
-    setStatus("Enter the new code on your Mac", false);
-    input.focus();
-  });
-  box.appendChild(again);
-
-  // a second prompt would invalidate the code the user is reading
-  chrome.runtime.sendMessage({ type: "requestChallenge", ifNeeded: true }).catch(() => {});
-
-  // also reached from the background's "unlocked" message via lockedResume
-  const finishUnlock = async () => {
-    lockedResume = null;
-    if (typeof onUnlock === "function") {
-      removeSuggestion();
-      onUnlock();
-      return;
-    }
-    cachedLogins = null;
-    const r2 = await chrome.runtime.sendMessage({ type: "inlineLogins" }).catch(() => null);
-    cachedLogins = r2?.logins || [];
-    if (cachedLogins.length === 1) {
-      removeSuggestion();
-      fillAnchor = field;
-      chrome.runtime.sendMessage({ type: "inlineFill", loginName: cachedLogins[0] }).catch(() => {});
-    } else if (cachedLogins.length > 1) {
-      buildChooser(field, cachedLogins);
-    } else {
-      removeSuggestion();
-    }
-  };
-  lockedResume = finishUnlock;
-
-  let verifying = false;
-  const doVerify = async () => {
-    if (verifying) return;
-    const pin = input.value.trim();
-    if (pin.length < 4) return;
-    verifying = true;
-    setStatus("Verifying...", false);
-    let res;
-    try {
-      res = await chrome.runtime.sendMessage({ type: "verifyPin", pin });
-    } catch (err) {
-      verifying = false;
-      setStatus("Verification failed, try again", true);
-      return;
-    }
-    verifying = false;
-    if (res?.ok && res.state === "unlocked") {
-      finishUnlock();
-    } else {
-      // the attempt burned that challenge, so the background already put a new code on the Mac
-      const base = res?.error || "Verification failed";
-      setStatus(res?.newCode ? `${base} - enter the new code on your Mac` : base, true);
-      input.value = "";
-      input.focus();
-    }
-  };
-
-  input.addEventListener("keydown", (e) => {
-    if (!e.isTrusted) return;
-    if (e.key === "Enter") doVerify();
-  });
-  input.addEventListener("input", () => {
-    if (input.value.trim().length === 6) doVerify();
-  });
-
-  setTimeout(() => input.focus(), 0);
+  const note = document.createElement("div");
+  note.textContent = "Unlock in the Open Passwords toolbar popup.";
+  Object.assign(note.style, { padding: "10px 12px", fontSize: "12px" });
+  box.appendChild(note);
+  // The page never hosts the pairing secret. Only the extension popup can pair.
+  const result = await chrome.runtime.sendMessage({ type: "openPopup" }).catch(() => null);
+  if (!result?.ok) note.textContent = "Click Open Passwords in your browser toolbar to unlock.";
 }
 
 function isNewPasswordField(el) {
@@ -677,6 +567,8 @@ function fillGeneratedPassword(field, pw) {
     everPassword.add(t);
   }
   lastGenerated = { host: location.hostname, password: pw, at: Date.now() };
+  clearTimeout(generatedTimer);
+  generatedTimer = setTimeout(() => { lastGenerated = null; }, 120_000);
 }
 
 // fill routes through the origin-checked background path, page never sees the password
@@ -924,7 +816,7 @@ async function buildOneTimeCodeSuggestion(field) {
     const row = document.createElement("div");
     row.textContent = "Unlock to fill verification codes…";
     Object.assign(row.style, { padding: "8px 10px", cursor: "pointer" });
-    registerRow(row, () => buildLockedSuggestion(field, () => buildOneTimeCodeSuggestion(field)));
+    registerRow(row, () => buildLockedSuggestion(field));
     box.appendChild(row);
     positionBox();
     return;
@@ -1069,6 +961,7 @@ document.addEventListener(
 
 let lastSaveKey = "";
 let lastSaveAt = 0;
+let lastSaveTimer;
 
 const SUBMITY_LABEL =
   /\b(sign[\s-]?in|sign[\s-]?up|log[\s-]?in|register|create[\s-]?account|save|update|reset|confirm|done|set|apply|activate|enroll|finish|proceed|verify|join|change[\s-]?password|continue|next|submit)\b/i;
@@ -1180,6 +1073,8 @@ async function maybeOfferSave(scope) {
   if (key === lastSaveKey && now - lastSaveAt < 15000) return;
   lastSaveKey = key;
   lastSaveAt = now;
+  clearTimeout(lastSaveTimer);
+  lastSaveTimer = setTimeout(() => { lastSaveKey = ""; }, 15_000);
 
   const root = scope && scope.querySelectorAll ? scope : document;
   const pwInputs = Array.from(root.querySelectorAll("input")).filter(isPasswordish);
@@ -1189,12 +1084,6 @@ async function maybeOfferSave(scope) {
     pwInputs.some((p) => (p.getAttribute("autocomplete") || "").toLowerCase().includes("new-password"));
 
   // fire and forget, awaiting would let a navigating submit kill us
-  console.debug("[Open Passwords] handing save to background", {
-    host: location.hostname,
-    user: cred.username || "(none)",
-    generated,
-    newPwCtx,
-  });
   chrome.runtime
     .sendMessage({
       type: "resolveSave",

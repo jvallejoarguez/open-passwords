@@ -3,11 +3,13 @@
 import { ApplePasswords, State } from "./protocol.js";
 
 const client = new ApplePasswords();
+let secretGeneration = 0;
 
 client.onStateChange((s) => {
   if (s !== State.Unlocked) {
+    secretGeneration++;
     pwCacheClear();
-    otpByTab.clear();
+    clearEntries(otpByDocument);
   }
   broadcast({ type: "state", state: s });
 });
@@ -52,11 +54,6 @@ async function tryAutoPair(reason) {
     autoPairError = null;
     if (client.ready) {
       flushPendingSaves();
-      // only the active tab can have the inline PIN box open
-      try {
-        const tab = await activeTab();
-        if (tab?.id != null) chrome.tabs.sendMessage(tab.id, { type: "unlocked" }).catch(() => {});
-      } catch (_) {}
     }
     return client.ready;
   } catch (e) {
@@ -72,47 +69,58 @@ client.onOneTimeCodeAvailable(async () => {
   try {
     const tab = await activeTab();
     if (tab?.id == null) return;
-    otpByTab.delete(tab.id);
+    clearEntries(otpByDocument, (entry) => entry.target.tabId === tab.id);
     chrome.tabs.sendMessage(tab.id, { type: "oneTimeCodeAvailable" }).catch(() => {});
   } catch (_) {}
 });
 
-// rows resolve by id so the page never chooses the username/domain
-const otpByTab = new Map();
+// Code selections belong to a browser document, never just a reusable tab ID.
+const otpByDocument = new Map();
 const OTP_LIST_TTL_MS = 120_000;
 
-// apple walks the whole parent chain via webNavigation, the top URL covers a same-site iframe without another permission
-function frameUrlsFor(sender) {
-  const urls = [];
-  for (const u of [sender.url, sender.tab?.url]) {
-    if (u && /^https?:/i.test(u) && !urls.includes(u)) urls.push(u);
+function forgetEntry(map, key) {
+  clearTimeout(map.get(key)?.timer);
+  map.delete(key);
+}
+function clearEntries(map, matches = () => true) {
+  for (const [key, entry] of map) if (matches(entry)) forgetEntry(map, key);
+}
+function rememberEntry(map, key, value, ttl) {
+  forgetEntry(map, key);
+  map.set(key, { ...value, expiresAt: Date.now() + ttl,
+    timer: setTimeout(() => forgetEntry(map, key), ttl) });
+}
+function readEntry(map, key) {
+  const entry = map.get(key);
+  if (entry && Date.now() >= entry.expiresAt) {
+    forgetEntry(map, key);
+    return undefined;
   }
-  return urls;
+  return entry;
+}
+function documentKey(target) {
+  return `${target.tabId}:${target.documentId}`;
 }
 
-// never the code itself at list time
-function otpRow(e, i) {
-  return { id: i, source: e.source, username: e.username, domain: e.domain };
+async function listOneTimeCodes(target) {
+  const generation = secretGeneration;
+  const { entries, requiresAuth } = await client.getOneTimeCodes(target.tabId, target.frameId, [target.url]);
+  await checkTarget(target);
+  checkSession(generation);
+  const rows = entries.map((e) => ({ ...e, id: crypto.randomUUID() }));
+  rememberEntry(otpByDocument, documentKey(target), { target, rows }, OTP_LIST_TTL_MS);
+  return { rows: rows.map(({ id, source, username, domain }) => ({ id, source, username, domain })), requiresAuth };
 }
 
-async function listOneTimeCodes(tabId, frameId, frameUrls) {
-  const { entries, requiresAuth } = await client.getOneTimeCodes(tabId, frameId, frameUrls);
-  otpByTab.set(tabId, { at: Date.now(), entries, frameId, frameUrls });
-  return { rows: entries.map(otpRow), requiresAuth };
-}
-
-// TOTP is re-read now, the value rotates and this read triggers Touch ID when the vault demands it
-async function resolveOneTimeCode(tabId, id) {
-  const cached = otpByTab.get(tabId);
-  if (!cached || Date.now() - cached.at > OTP_LIST_TTL_MS) throw new Error("code list expired, focus the field again");
-  const entry = cached.entries[id];
-  if (!entry) throw new Error("unknown code");
+async function resolveOneTimeCode(target, id) {
+  const cached = readEntry(otpByDocument, documentKey(target));
+  if (!cached || !sameTarget(cached.target, target)) throw new Error("Code list expired. Focus the field again.");
+  const entry = cached.rows.find((row) => row.id === id);
+  if (!entry) throw new Error("Code selection expired. Focus the field again.");
   if (entry.source !== "totp") return entry.code;
-  const fresh = await client.readOneTimeCode(tabId, cached.frameId, cached.frameUrls, entry.username);
-  const match =
-    fresh.find((e) => e.source === "totp" && e.username === entry.username && e.domain === entry.domain) ||
-    fresh.find((e) => e.source === "totp");
-  if (!match?.code) throw new Error("no code returned");
+  const fresh = await client.readOneTimeCode(target.tabId, target.frameId, [target.url], entry.username);
+  const match = fresh.find((e) => e.source === "totp" && e.username === entry.username && e.domain === entry.domain);
+  if (!match?.code) throw new Error("No matching verification code returned.");
   return match.code;
 }
 
@@ -158,13 +166,19 @@ function queuePendingSave(save) {
   const k = `${save.host} ${(save.detected || "").toLowerCase()}`;
   const i = pendingSaves.findIndex((p) => `${p.host} ${(p.detected || "").toLowerCase()}` === k);
   if (i >= 0) pendingSaves.splice(i, 1);
+  save.expiresAt = Date.now() + PW_CACHE_TTL_MS;
   pendingSaves.push(save);
+  setTimeout(() => {
+    const index = pendingSaves.indexOf(save);
+    if (index >= 0) pendingSaves.splice(index, 1);
+  }, PW_CACHE_TTL_MS);
   while (pendingSaves.length > 10) pendingSaves.shift();
 }
 async function flushPendingSaves() {
   if (!client.ready || !pendingSaves.length) return;
   const batch = pendingSaves.splice(0);
   for (const s of batch) {
+    if (Date.now() >= s.expiresAt) continue;
     try {
       let existing = [];
       try {
@@ -199,37 +213,31 @@ function uniqueByUsername(logins) {
   });
 }
 
-const lastFillByTab = new Map();
-
-// re-filling the same login skips a second Touch ID, apple prompts every read
+// Short repeat fills reuse a credential only within the same document and origin.
 const PW_CACHE_TTL_MS = 120_000;
 const pwCache = new Map();
-function pwCacheKey(host, username) {
-  return `${host}\n${(username || "").toLowerCase()}`;
+function pwCacheKey(target, username) {
+  return JSON.stringify([target.tabId, target.documentId, target.origin, username || ""]);
 }
-function pwCacheGet(host, username) {
-  const k = pwCacheKey(host, username);
-  const hit = pwCache.get(k);
-  if (!hit) return null;
-  if (Date.now() - hit.at > PW_CACHE_TTL_MS) {
-    pwCache.delete(k);
-    return null;
-  }
-  return hit.cred;
+function pwCacheGet(target, username) {
+  return readEntry(pwCache, pwCacheKey(target, username))?.cred;
 }
-function pwCacheSet(host, cred) {
-  if (!host || !cred?.username) return;
-  pwCache.set(pwCacheKey(host, cred.username), { cred, at: Date.now() });
+function pwCacheSet(target, cred) {
+  rememberEntry(pwCache, pwCacheKey(target, cred.username), { target, cred }, PW_CACHE_TTL_MS);
 }
 function pwCacheClear() {
-  pwCache.clear();
+  clearEntries(pwCache);
 }
 
-function withTimeout(promise, ms, label) {
-  return Promise.race([
-    promise,
-    new Promise((_, reject) => setTimeout(() => reject(new Error(label || "timed out")), ms)),
-  ]);
+async function withTimeout(promise, ms, label) {
+  let timer;
+  try {
+    return await Promise.race([promise, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(label || "timed out")), ms);
+    })]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // defeat the MV3 ~30s idle shutdown that kills the session
@@ -277,7 +285,8 @@ suppressChromeAutofill();
 
 // content messages carry sender.tab, the popup never does
 function isFromOwnUi(sender) {
-  return sender.id === chrome.runtime.id && sender.tab === undefined;
+  return sender.id === chrome.runtime.id && sender.tab === undefined &&
+    sender.url === chrome.runtime.getURL("src/popup.html");
 }
 
 async function activeTab() {
@@ -304,14 +313,101 @@ function isLocalDevHost(host) {
   );
 }
 
+function secureOrigin(url) {
+  const u = new URL(url);
+  if (u.protocol !== "https:" && !(u.protocol === "http:" && isLocalDevHost(u.hostname))) {
+    throw new Error("Open Passwords only fills secure HTTPS pages.");
+  }
+  return u.origin;
+}
+
+function targetFromSender(sender) {
+  const origin = secureOrigin(sender.url);
+  if (sender.tab?.id == null || sender.frameId == null || !sender.documentId ||
+      sender.origin !== origin || (sender.documentLifecycle && sender.documentLifecycle !== "active")) {
+    throw new Error("This page cannot receive credentials.");
+  }
+  return { tabId: sender.tab.id, frameId: sender.frameId, documentId: sender.documentId, url: sender.url, origin };
+}
+
+function sameTarget(a, b) {
+  return a && b && a.tabId === b.tabId && a.frameId === b.frameId &&
+    a.documentId === b.documentId && a.origin === b.origin && a.url === b.url;
+}
+
+// Obtain documentId from Chrome's MessageSender via the isolated content script.
+// This avoids an extra webNavigation permission or a page-controlled document ID.
+async function pageTarget() {
+  const tab = await activeTab();
+  secureOrigin(tab?.url);
+  const reply = await chrome.tabs.sendMessage(tab.id, { type: "getFrameContext" }, { frameId: 0 });
+  const target = reply?.target;
+  if (!reply?.ok || target?.tabId !== tab.id || target.frameId !== 0 || target.url !== tab.url) {
+    throw new Error("Page changed. Reopen Open Passwords.");
+  }
+  return target;
+}
+async function checkTarget(target) {
+  if (!target?.documentId || secureOrigin(target.url) !== target.origin) throw new Error("Invalid fill target.");
+  const reply = await chrome.tabs.sendMessage(target.tabId, { type: "getFrameContext" }, { documentId: target.documentId });
+  if (!reply?.ok || !sameTarget(reply.target, target)) throw new Error("Page changed. Reopen Open Passwords.");
+}
+async function popupTarget(target) {
+  const tab = await activeTab();
+  if (tab?.id !== target?.tabId) throw new Error("Tab changed. Reopen Open Passwords.");
+  await checkTarget(target);
+  return target;
+}
+function checkSession(generation) {
+  if (!client.ready || generation !== secretGeneration) throw new Error("Passwords locked. Unlock and try again.");
+}
+async function deliver(target, message, generation) {
+  await checkTarget(target);
+  checkSession(generation);
+  return chrome.tabs.sendMessage(target.tabId, { ...message, expectedOrigin: target.origin, expectedUrl: target.url },
+    { documentId: target.documentId });
+}
+async function fillPassword(target, login) {
+  await checkTarget(target);
+  const generation = secretGeneration;
+  checkSession(generation);
+  let cred = pwCacheGet(target, login?.username);
+  if (!cred) {
+    cred = await client.getPasswordForLoginName(target.tabId, target.url, { username: login?.username });
+  }
+  if (!cred) return false;
+  const result = await deliver(target, { type: "fill", username: cred.username, password: cred.password }, generation);
+  checkSession(generation);
+  if (result?.filled) {
+    pwCacheSet(target, cred);
+    recordMru(registrableHost(target.url), cred.username);
+  }
+  return !!result?.filled;
+}
+async function fillOneTimeCode(target, id) {
+  await checkTarget(target);
+  const generation = secretGeneration;
+  checkSession(generation);
+  const code = await resolveOneTimeCode(target, id);
+  const result = await deliver(target, { type: "fillOtp", code }, generation);
+  checkSession(generation);
+  forgetEntry(otpByDocument, documentKey(target));
+  return { filled: !!result?.filled, code };
+}
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  clearEntries(pwCache, (e) => e.target.tabId === tabId);
+  clearEntries(otpByDocument, (e) => e.target.tabId === tabId);
+});
+
 // only these from a content script, none returns a password to the page
 const CONTENT_ALLOWED = new Set([
   "inlineLogins",
   "inlineFill",
   "inlineOneTimeCodes",
   "inlineFillOneTimeCode",
-  "requestChallenge",
-  "verifyPin",
+  "getFrameContext",
+  "openPopup",
   "resolveSave",
 ]);
 
@@ -333,115 +429,53 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
 
       switch (msg?.type) {
+        case "getFrameContext":
+          return sendResponse({ ok: true, target: targetFromSender(sender) });
+
+        case "getPageTarget":
+          return sendResponse({ ok: true, target: await pageTarget() });
+
+        case "openPopup": {
+          const target = targetFromSender(sender);
+          const tab = await activeTab();
+          if (tab?.id !== target.tabId) throw new Error("Select this tab first.");
+          await checkTarget(target);
+          await chrome.action.openPopup();
+          return sendResponse({ ok: true });
+        }
+
         case "inlineLogins": {
-          // keyed to sender.url not the top tab
-          const frameUrl = sender.url;
-          if (!frameUrl) return sendResponse({ ok: false, error: "no frame" });
+          const target = targetFromSender(sender);
           await ensureConnected();
           if (!client.ready) return sendResponse({ ok: true, locked: true, logins: [] });
-          try {
-            const logins = await client.getLoginNamesForURL(sender.tab?.id, frameUrl);
-            sendResponse({
-              ok: true,
-              locked: false,
-              logins: uniqueByUsername(orderByMru(registrableHost(frameUrl), logins)),
-            });
-          } catch {
-            sendResponse({ ok: true, locked: false, logins: [] });
-          }
-          break;
+          const generation = secretGeneration;
+          const logins = await client.getLoginNamesForURL(target.tabId, target.url);
+          await checkTarget(target);
+          checkSession(generation);
+          return sendResponse({ ok: true, locked: false,
+            logins: uniqueByUsername(orderByMru(registrableHost(target.url), logins)) });
         }
 
         case "inlineOneTimeCodes": {
-          const frameUrl = sender.url;
-          if (!frameUrl || sender.tab?.id == null) return sendResponse({ ok: false, error: "no frame" });
+          const target = targetFromSender(sender);
           await ensureConnected();
-          // capabilities arrive with the hello, before the PIN, so locked still knows if codes are supported
           if (!client.ready) return sendResponse({ ok: true, locked: true, supported: client.canFillOneTimeCodes, rows: [] });
           if (!client.canFillOneTimeCodes) return sendResponse({ ok: true, locked: false, supported: false, rows: [] });
-          try {
-            const { rows, requiresAuth } = await listOneTimeCodes(sender.tab.id, sender.frameId ?? 0, frameUrlsFor(sender));
-            sendResponse({ ok: true, locked: false, supported: true, rows, requiresAuth });
-          } catch (e) {
-            sendResponse({ ok: true, locked: false, supported: true, rows: [], error: String(e?.message ?? e) });
-          }
-          break;
+          return sendResponse({ ok: true, locked: false, supported: true, ...await listOneTimeCodes(target) });
         }
 
         case "inlineFillOneTimeCode": {
-          const frameUrl = sender.url;
-          const frameId = sender.frameId;
-          if (!frameUrl || sender.tab?.id == null || frameId == null) return sendResponse({ ok: false, error: "no frame" });
-          const host = registrableHost(frameUrl);
-          if (!/^https:\/\//i.test(frameUrl) && !isLocalDevHost(host)) {
-            return sendResponse({ ok: false, error: "refusing to fill on a non-HTTPS frame" });
-          }
-          const code = await resolveOneTimeCode(sender.tab.id, Number(msg.id));
-          const resp = await chrome.tabs.sendMessage(
-            sender.tab.id,
-            { type: "fillOtp", code, expectedHost: host },
-            { frameId },
-          );
-          sendResponse({ ok: true, filled: !!resp?.filled });
-          break;
+          const result = await fillOneTimeCode(targetFromSender(sender), msg.id);
+          return sendResponse({ ok: true, filled: result.filled });
         }
 
-        case "inlineFill": {
-          // frameId scopes the fill to the requesting frame, never broadcast (confused deputy)
-          const frameUrl = sender.url;
-          const frameId = sender.frameId;
-          if (!frameUrl || sender.tab?.id == null || frameId == null) {
-            return sendResponse({ ok: false, error: "no frame" });
-          }
-          const host = registrableHost(frameUrl);
-          const isLocalDev =
-            host === "localhost" ||
-            host === "127.0.0.1" ||
-            host === "[::1]" ||
-            host?.endsWith(".localhost") ||
-            host?.endsWith(".test");
-          if (!/^https:\/\//i.test(frameUrl) && !isLocalDev) {
-            return sendResponse({ ok: false, error: "refusing to fill on a non-HTTPS frame" });
-          }
-          // pass only the username through, sites is caller-supplied
-          const safeLogin = { username: msg.loginName?.username };
-          let cred = pwCacheGet(host, safeLogin.username);
-          if (!cred) {
-            cred = await client.getPasswordForLoginName(sender.tab.id, frameUrl, safeLogin);
-            if (cred) pwCacheSet(host, cred);
-          }
-          let filled = false;
-          if (cred) {
-            const resp = await chrome.tabs.sendMessage(
-              sender.tab.id,
-              {
-                type: "fill",
-                username: cred.username,
-                password: cred.password,
-                expectedHost: host,
-              },
-              { frameId },
-            );
-            filled = !!resp?.filled;
-            if (filled) {
-              recordMru(host, cred.username);
-              lastFillByTab.set(sender.tab.id, { host, username: cred.username });
-            }
-          }
-          sendResponse({ ok: true, filled });
-          break;
-        }
+        case "inlineFill":
+          return sendResponse({ ok: true, filled: await fillPassword(targetFromSender(sender), msg.loginName) });
 
         case "resolveSave": {
           // saving here so a submit that navigates cant kill it
-          const frameUrl = sender.url;
-          if (!frameUrl || sender.tab?.id == null) {
-            return sendResponse({ ok: false, error: "no frame" });
-          }
+          const frameUrl = targetFromSender(sender).url;
           const host = registrableHost(frameUrl);
-          if (!/^https:\/\//i.test(frameUrl) && !isLocalDevHost(host)) {
-            return sendResponse({ ok: false, error: "refusing to save from a non-HTTPS frame" });
-          }
           if (!msg.password) return sendResponse({ ok: false, error: "no password" });
           const detected = (msg.username || "").trim();
           const generated = !!msg.generated;
@@ -471,14 +505,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               .filter(Boolean);
           } catch {}
           const target = pickSaveTarget({ host, existing, detected, generated, newPwCtx });
-          console.debug("[Open Passwords] resolveSave", {
-            host,
-            detected: detected || "(none)",
-            generated,
-            newPwCtx,
-            existingCount: existing.length,
-            target: target === null ? "(skip)" : target || "(ask)",
-          });
           if (target === null) return sendResponse({ ok: true, saved: false, skipped: true });
           await client.saveLogin(sender.tab.id, frameUrl, target, msg.password);
           sendResponse({ ok: true, saved: true });
@@ -507,41 +533,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }
 
         case "getOneTimeCodes": {
-          const tab = await activeTab();
-          if (!tab?.url) return sendResponse({ ok: false, error: "no active tab" });
+          const target = await popupTarget(msg.target);
           if (!client.ready) return sendResponse({ ok: true, rows: [] });
           if (!client.canFillOneTimeCodes) return sendResponse({ ok: true, supported: false, rows: [] });
-          const { rows, requiresAuth } = await listOneTimeCodes(tab.id, 0, frameUrlsFor({ url: tab.url, tab }));
-          sendResponse({ ok: true, supported: true, rows, requiresAuth });
-          break;
+          return sendResponse({ ok: true, supported: true, ...await listOneTimeCodes(target) });
         }
 
         case "fillOneTimeCode": {
-          // every frame gets it, only the one with a code field acts. value returned so the popup can show it if none did
-          const tab = await activeTab();
-          if (!tab?.url) return sendResponse({ ok: false, error: "no active tab" });
-          const host = registrableHost(tab.url);
-          if (!/^https:\/\//i.test(tab.url) && !isLocalDevHost(host)) {
-            return sendResponse({ ok: false, error: "refusing to fill on a non-HTTPS page" });
-          }
-          const code = await resolveOneTimeCode(tab.id, Number(msg.id));
-          let filled = false;
-          try {
-            const frames = await new Promise((resolve) =>
-              chrome.tabs.sendMessage(tab.id, { type: "fillOtp", code, expectedHost: host }, (r) => {
-                void chrome.runtime.lastError;
-                resolve(r);
-              }),
-            );
-            filled = !!frames?.filled;
-          } catch (_) {}
-          sendResponse({ ok: true, filled, code });
-          break;
+          const target = await popupTarget(msg.target);
+          return sendResponse({ ok: true, ...await fillOneTimeCode(target, msg.id) });
         }
 
         case "openPasswordsApp": {
-          const tab = await activeTab();
-          const url = tab?.url && /^https?:/i.test(tab.url) ? tab.url : undefined;
+          const target = await popupTarget(msg.target);
+          const url = target.url;
           await ensureConnected();
           if (msg.mode === "totp") {
             if (!msg.uri || !/^(apple-)?otpauth:\/\//i.test(msg.uri)) return sendResponse({ ok: false, error: "no otpauth URI" });
@@ -561,8 +566,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
 
         case "requestChallenge":
-          // top frame or popup only, so a hostile sub-frame cant spam native prompts
-          if (fromContent && sender.frameId !== 0) return sendResponse({ ok: false, error: "forbidden" });
+          // Pairing is only available in the extension popup.
           await ensureConnected();
           await withTimeout(client.requestChallenge({ ifNeeded: !!msg.ifNeeded }), 8000, "challenge timed out");
           // not awaited, the UI shows its PIN box while auto-pair reads the code
@@ -571,7 +575,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
 
         case "verifyPin": {
-          if (fromContent && sender.frameId !== 0) return sendResponse({ ok: false, error: "forbidden" });
           await ensureConnected();
           try {
             await withTimeout(client.verifyPin(msg.pin), 8000, "verification timed out");
@@ -597,78 +600,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }
 
         case "getLogins": {
-          const tab = await activeTab();
-          if (!tab?.url) return sendResponse({ ok: false, error: "no active tab" });
-          const logins = await client.getLoginNamesForURL(tab.id, tab.url);
-          sendResponse({ ok: true, logins: uniqueByUsername(orderByMru(registrableHost(tab.url), logins)) });
-          break;
+          const target = await popupTarget(msg.target);
+          const generation = secretGeneration;
+          const logins = await client.getLoginNamesForURL(target.tabId, target.url);
+          await checkTarget(target);
+          checkSession(generation);
+          return sendResponse({ ok: true, logins: uniqueByUsername(orderByMru(registrableHost(target.url), logins)) });
         }
 
-        case "fillOnPage": {
-          const tab = await activeTab();
-          if (!tab?.url) return sendResponse({ ok: false, error: "no active tab" });
-          const host = registrableHost(tab.url);
-          const isLocalDev =
-            host === "localhost" ||
-            host === "127.0.0.1" ||
-            host === "[::1]" ||
-            host?.endsWith(".localhost") ||
-            host?.endsWith(".test");
-          if (!/^https:\/\//i.test(tab.url) && !isLocalDev) {
-            return sendResponse({ ok: false, error: "refusing to fill on a non-HTTPS page" });
-          }
-          let cred = pwCacheGet(host, msg.loginName?.username);
-          if (!cred) {
-            cred = await client.getPasswordForLoginName(tab.id, tab.url, msg.loginName);
-            if (cred) pwCacheSet(host, cred);
-          }
-          let filled = false;
-          if (cred) {
-            // content script re-checks expectedHost before filling
-            const resp = await chrome.tabs.sendMessage(tab.id, {
-              type: "fill",
-              username: cred.username,
-              password: cred.password,
-              expectedHost: host,
-            });
-            filled = !!resp?.filled;
-            if (filled) {
-              recordMru(host, cred.username);
-              lastFillByTab.set(tab.id, { host, username: cred.username });
-            }
-          }
-          sendResponse({ ok: true, filled });
-          break;
-        }
-
-        case "refreshAndRefill": {
-          // re-fill so a password changed in the Passwords app lands without re-clicking Fill
-          pwCacheClear();
-          const tab = await activeTab();
-          const entry = tab?.id != null ? lastFillByTab.get(tab.id) : null;
-          const host = tab?.url ? registrableHost(tab.url) : null;
-          if (!entry || !host || entry.host !== host) {
-            return sendResponse({ ok: true, refilled: false });
-          }
-          try {
-            const cred = await client.getPasswordForLoginName(tab.id, tab.url, { username: entry.username });
-            if (!cred) return sendResponse({ ok: true, refilled: false });
-            pwCacheSet(host, cred);
-            const resp = await chrome.tabs.sendMessage(tab.id, {
-              type: "fill",
-              username: cred.username,
-              password: cred.password,
-              expectedHost: host,
-            });
-            sendResponse({ ok: true, refilled: !!resp?.filled, username: cred.username });
-          } catch (e) {
-            sendResponse({ ok: true, refilled: false, error: String(e?.message ?? e) });
-          }
-          break;
-        }
+        case "fillOnPage":
+          return sendResponse({ ok: true, filled: await fillPassword(await popupTarget(msg.target), msg.loginName) });
 
         case "clearCache":
           pwCacheClear();
+          clearEntries(otpByDocument);
           sendResponse({ ok: true });
           break;
 

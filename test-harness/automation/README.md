@@ -1,4 +1,6 @@
-# Headless test suite
+# Legacy upstream headless test suite
+
+These browser drivers and regex-based mock builds predate the fork's document-bound messages and popup-only pairing. They are retained as upstream fixtures, **not a passing security check for this fork**. In particular, the inline-PIN expectations and `expectedHost` mocks must be migrated before use. The standalone `pin-session.test.mjs` still tests the unchanged protocol. Current security regressions and the isolated popup preview are in [`../security`](../security).
 
 Automated tests that load the extension in real headless Chrome (Playwright) and
 assert the dropdown/fill/PIN behavior across scenarios. They use mock builds of the

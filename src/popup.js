@@ -184,18 +184,40 @@ function setDot(state) {
 }
 
 function send(msg) {
-  return new Promise((resolve) => chrome.runtime.sendMessage(msg, resolve));
+  return new Promise((resolve) => chrome.runtime.sendMessage(msg, (response) => {
+    const error = chrome.runtime.lastError;
+    resolve(error ? { ok: false, error: error.message } : response);
+  }));
 }
 
-async function activeTab() {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  return tab;
+let pageTarget = null;
+let pageError = "";
+let targetRequest;
+async function getPageTarget() {
+  if (!targetRequest) targetRequest = send({ type: "getPageTarget" }).then((r) => {
+    pageTarget = r?.ok ? r.target : null;
+    pageError = r?.error || "Reload this page to enable Open Passwords.";
+    return pageTarget;
+  });
+  return targetRequest;
+}
+function pageMessage(message, target = pageTarget) {
+  return send({ ...message, target });
 }
 
 let lastState = "disconnected";
+let viewRevision = 0;
 
 async function render(state) {
+  const revision = ++viewRevision;
   lastState = state;
+  if (state !== "unlocked") {
+    document.getElementById("logins").replaceChildren();
+    document.getElementById("codes").replaceChildren();
+    pageTotpUri = null;
+  }
+  document.getElementById("lock").hidden = state !== "unlocked";
+  if (state !== "needs_pin") pinInput.value = "";
   setDot(state);
   refreshBtn.hidden = state !== "unlocked" && state !== "needs_pin";
   if (state === "no_helper") return show("nohelper");
@@ -206,25 +228,32 @@ async function render(state) {
     return;
   }
   if (state === "unlocked") {
-    await renderLogins();
+    await getPageTarget();
+    if (revision !== viewRevision) return;
+    await renderLogins(revision);
+    if (revision !== viewRevision) return;
     show("unlocked");
-    renderCodes();
-    renderAppLinks();
+    renderCodes(revision);
+    renderAppLinks(revision);
+    document.getElementById("search").focus();
     return;
   }
   // unknown state must never leave every view hidden (blank popup)
   show("connecting");
 }
 
-async function renderLogins() {
-  const tab = await activeTab();
-  document.getElementById("site").textContent = tab?.url ? new URL(tab.url).hostname : "";
+async function renderLogins(revision = viewRevision) {
+  const target = pageTarget;
+  document.getElementById("site").textContent = pageTarget ? new URL(pageTarget.url).host : "This page";
   const list = document.getElementById("logins");
   const none = document.getElementById("nologins");
   list.innerHTML = "";
   none.hidden = true;
+  none.textContent = "No saved passwords for this site.";
+  document.getElementById("search-empty").hidden = true;
 
-  const res = await send({ type: "getLogins", tabId: tab.id, url: tab.url });
+  const res = target ? await pageMessage({ type: "getLogins" }, target) : { ok: false, error: pageError };
+  if (revision !== viewRevision || target !== pageTarget) return;
   if (!res?.ok) {
     none.hidden = false;
     none.textContent = res?.error ?? "Couldn't load logins.";
@@ -236,6 +265,7 @@ async function renderLogins() {
   }
   for (const login of res.logins) {
     const li = document.createElement("li");
+    li.dataset.search = (login.username || "").toLowerCase();
     const u = document.createElement("span");
     u.className = "u";
     u.textContent = login.username || "(no username)";
@@ -243,20 +273,24 @@ async function renderLogins() {
     fill.textContent = "Fill";
     fill.addEventListener("click", async () => {
       fill.disabled = true;
-      const r = await send({ type: "fillOnPage", tabId: tab.id, url: tab.url, loginName: login });
+      const r = await pageMessage({ type: "fillOnPage", loginName: login }, target);
       if (r?.ok && r.filled) window.close();
-      else fill.disabled = false;
+      else { fill.disabled = false; flashNote(r?.error || "Focus a login field and try again."); }
     });
     li.append(u, fill);
     list.appendChild(li);
   }
+  filterLogins();
 }
 
-async function renderCodes() {
+async function renderCodes(revision = viewRevision) {
+  const target = pageTarget;
   const list = document.getElementById("codes");
   list.innerHTML = "";
   list.hidden = true;
-  const res = await send({ type: "getOneTimeCodes" });
+  if (!pageTarget) return;
+  const res = await pageMessage({ type: "getOneTimeCodes" }, target);
+  if (revision !== viewRevision || target !== pageTarget) return;
   if (!res?.ok || !res.rows?.length) return;
   for (const row of res.rows) {
     const li = document.createElement("li");
@@ -281,10 +315,13 @@ async function renderCodes() {
     fill.textContent = "Fill";
     fill.addEventListener("click", async () => {
       fill.disabled = true;
-      const r = await send({ type: "fillOneTimeCode", id: row.id });
+      const r = await pageMessage({ type: "fillOneTimeCode", id: row.id }, target);
+      if (revision !== viewRevision) return;
       if (r?.ok && r.filled) return window.close();
       if (r?.ok && r.code) {
-        fill.replaceWith(codeBadge(r.code));
+        const badge = codeBadge(r.code);
+        fill.replaceWith(badge);
+        setTimeout(() => { badge.textContent = "Expired"; }, 30_000);
         return;
       }
       fill.disabled = false;
@@ -306,16 +343,17 @@ function codeBadge(code) {
 
 let caps = {};
 let pageTotpUri = null;
-async function renderAppLinks() {
+async function renderAppLinks(revision = viewRevision) {
+  const target = pageTarget;
   document.getElementById("new-login").hidden = !caps.newPasswordSheet;
   const totpBtn = document.getElementById("setup-totp");
   totpBtn.hidden = true;
   pageTotpUri = null;
   if (!caps.setUpTotp) return;
   try {
-    const tab = await activeTab();
-    if (!tab?.id) return;
-    const r = await chrome.tabs.sendMessage(tab.id, { type: "findTotpUri" }, { frameId: 0 });
+    if (!pageTarget) return;
+    const r = await chrome.tabs.sendMessage(pageTarget.tabId, { type: "findTotpUri" }, { documentId: pageTarget.documentId });
+    if (revision !== viewRevision || target !== pageTarget) return;
     const uri = r?.uris?.[0];
     if (!uri) return;
     pageTotpUri = uri;
@@ -324,24 +362,29 @@ async function renderAppLinks() {
 }
 
 document.getElementById("open-app").addEventListener("click", async () => {
-  await send({ type: "openPasswordsApp", mode: "search" });
+  await pageMessage({ type: "openPasswordsApp", mode: "search" });
   window.close();
 });
 document.getElementById("new-login").addEventListener("click", async () => {
-  await send({ type: "openPasswordsApp", mode: "new" });
+  await pageMessage({ type: "openPasswordsApp", mode: "new" });
   window.close();
 });
 document.getElementById("setup-totp").addEventListener("click", async () => {
   if (!pageTotpUri) return;
-  await send({ type: "openPasswordsApp", mode: "totp", uri: pageTotpUri });
+  await pageMessage({ type: "openPasswordsApp", mode: "totp", uri: pageTotpUri });
   window.close();
 });
 
 document.getElementById("verify").addEventListener("click", async () => {
   pinError.hidden = true;
   const pin = pinInput.value.trim();
-  if (pin.length < 4) return;
+  if (!/^\d{6}$/.test(pin) || pinInput.disabled) return;
+  pinInput.disabled = true;
+  document.getElementById("verify").disabled = true;
   const res = await send({ type: "verifyPin", pin });
+  pinInput.value = "";
+  pinInput.disabled = false;
+  document.getElementById("verify").disabled = false;
   if (res?.ok) render(res.state);
   else {
     // a failed attempt spends the code, so the background put a fresh one on the Mac
@@ -382,11 +425,16 @@ refreshBtn.addEventListener("click", async () => {
       pinError.hidden = false;
     }
   } else {
-    const r = await send({ type: "refreshAndRefill" });
-    await renderLogins();
-    renderCodes();
-    if (r?.refilled) flashNote(`Re-filled ${r.username} with the latest password`);
-    else flashNote("Passwords refreshed");
+    const revision = ++viewRevision;
+    await send({ type: "clearCache" });
+    targetRequest = null;
+    await getPageTarget();
+    if (revision === viewRevision) {
+      await renderLogins(revision);
+      await renderCodes(revision);
+      renderAppLinks(revision);
+      if (revision === viewRevision) flashNote("Passwords refreshed");
+    }
   }
   refreshBtn.classList.remove("spinning");
   refreshBtn.disabled = false;
@@ -404,10 +452,10 @@ document.getElementById("newcode").addEventListener("click", async () => {
 
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg?.type === "state") {
+    render(msg.state);
     // capabilities arrive with the hello, which precedes the first state change
     send({ type: "getState" }).then((r) => {
       caps = r?.caps || caps;
-      render(msg.state);
     });
   }
 });
@@ -424,3 +472,33 @@ chrome.runtime.onMessage.addListener((msg) => {
   }
   render(state);
 })();
+
+const searchInput = document.getElementById("search");
+function filterLogins() {
+  const query = searchInput.value.trim().toLowerCase();
+  const rows = [...document.querySelectorAll("#logins li")];
+  for (const row of rows) row.hidden = !row.dataset.search.includes(query);
+  document.getElementById("search-empty").hidden = !rows.length || rows.some((row) => !row.hidden);
+}
+searchInput.addEventListener("input", filterLogins);
+document.addEventListener("keydown", (event) => {
+  if (lastState !== "unlocked" || !["ArrowDown", "ArrowUp", "Enter"].includes(event.key)) return;
+  const active = document.activeElement;
+  if (active !== searchInput && !active.closest("#logins, #codes")) return;
+  const buttons = [...document.querySelectorAll("#logins li:not([hidden]) button, #codes button")].filter((b) => !b.disabled);
+  if (!buttons.length) return;
+  if (event.key === "Enter") {
+    if (active !== searchInput) return; // native button activation handles Enter
+    event.preventDefault();
+    buttons.find((button) => button.closest("#logins"))?.click();
+    return;
+  }
+  event.preventDefault();
+  const index = buttons.indexOf(active);
+  const next = event.key === "ArrowDown" ? (index + 1) % buttons.length : (index < 0 ? buttons.length - 1 : (index - 1 + buttons.length) % buttons.length);
+  buttons[next].focus();
+});
+document.getElementById("lock").addEventListener("click", async () => {
+  await send({ type: "disconnect" });
+  window.close();
+});
