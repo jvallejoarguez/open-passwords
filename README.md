@@ -10,7 +10,7 @@
 
 ---
 
-## Personal fork · v0.50.0
+## Personal fork · v0.50.1
 
 This fork starts from [Open Passwords v0.49.0](https://github.com/ManiForoughi2/open-passwords/tree/7bd3a9bb98e26522a4cdff825c8b06a6e7f6f092). It keeps the Apple Passwords backend and protocol implementation, with these changes:
 

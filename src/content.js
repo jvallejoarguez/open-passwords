@@ -233,9 +233,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         sendResponse({ ok: false, filled: false, error: "origin mismatch" });
         return true;
       }
-      // a frame with no code field stays silent so another frame's answer wins
+      // delivery is pinned to this document, so say no plainly and the popup can show the code instead
       const target = otpTargetField();
-      if (!target) return false;
+      if (!target) {
+        sendResponse({ ok: true, filled: false, error: "no code field" });
+        return true;
+      }
       fillOtp(target, msg.code);
       sendResponse({ ok: true, filled: true });
       return true;
@@ -328,7 +331,10 @@ function registerRow(row, onActivate) {
   row.setAttribute("role", "option");
   const idx = navItems.length;
   navItems.push({ el: row, onActivate });
-  row.addEventListener("mouseenter", () => setActiveNav(idx));
+  // a page-dispatched hover must not pick the row a later real Enter activates
+  row.addEventListener("mouseenter", (e) => {
+    if (e.isTrusted && navItems[idx]?.el === row) setActiveNav(idx);
+  });
   // act on click not mousedown so the click cant land on a link behind the box (x.com forgot password, issue #2)
   row.addEventListener("mousedown", (e) => {
     if (!e.isTrusted) return;
@@ -375,9 +381,12 @@ function onSuggestionKeydown(e) {
     setActiveNav((navIndex - 1 + navItems.length) % navItems.length);
     e.preventDefault();
   } else if (e.key === "Enter" && navIndex >= 0) {
+    // only a row the user can see in the open box, never a stale or hidden one
+    const item = navItems[navIndex];
+    if (!item || !suggestionEl.contains(item.el) || !isVisible(suggestionEl) || !isVisible(item.el)) return;
     e.preventDefault();
     e.stopPropagation();
-    navItems[navIndex].onActivate();
+    item.onActivate();
   }
 }
 

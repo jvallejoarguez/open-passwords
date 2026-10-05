@@ -50,7 +50,9 @@ class FakeEvent {
   stopImmediatePropagation() {}
 }
 
-function environment(url, topUrl = url) {
+const defaultReply = () => ({ ok: true, state: 'needs_pin', logins: [] });
+
+function environment(url, topUrl = url, reply = defaultReply) {
   const messages = [], receivers = [];
   const document = new FakeElement('document');
   document.createElement = tag => {
@@ -68,7 +70,7 @@ function environment(url, topUrl = url) {
   const chrome = { runtime: {
     id: 'test-extension-id', getURL: path => `chrome-extension://test-extension-id/${path}`,
     onMessage: { addListener(fn) { receivers.push(fn); } },
-    sendMessage(message) { messages.push(message); return Promise.resolve({ ok: true, state: 'needs_pin', logins: [] }); },
+    sendMessage(message) { messages.push(message); return Promise.resolve(reply(message)); },
   } };
   const context = vm.createContext({ document, location, window, chrome, console: { log() {}, debug() {} },
     HTMLInputElement: FakeInput, HTMLTextAreaElement: FakeElement, Element: FakeElement,
@@ -110,3 +112,67 @@ for (const [name, url, expectedOrigin, expectedUrl, accepted] of [
     assert.equal(password.value, accepted ? 'DUMMY_ONLY' : '');
   });
 }
+
+const trusted = (type, options) => Object.assign(new FakeEvent(type, options), { isTrusted: true });
+
+// an open inline box with two dummy logins, anchored to a focused field
+async function openLoginBox() {
+  const env = environment('https://account.example/login', undefined, msg =>
+    msg.type === 'inlineLogins' ? { ok: true, locked: false, logins: [{ username: 'dummy-a' }, { username: 'dummy-b' }] } : { ok: true });
+  const field = env.document.createElement('input');
+  env.document.body.appendChild(field);
+  env.document.activeElement = field;
+  env.context.dummyField = field;
+  await vm.runInContext('buildOfferSuggestion(dummyField)', env.context);
+  const box = env.document.body.children.find(el => el.attrs['data-open-passwords'] === 'suggestions');
+  const rows = box.children.filter(el => el.attrs.role === 'option');
+  const enter = () => env.document.dispatchEvent(trusted('keydown', { key: 'Enter', target: field }));
+  const fills = () => env.messages.filter(msg => msg.type === 'inlineFill').map(msg => msg.loginName.username);
+  return { env, field, rows, enter, fills };
+}
+
+test('a page-dispatched hover cannot choose the row a real Enter activates', async () => {
+  const { rows, enter, fills } = await openLoginBox();
+  assert.equal(rows.length, 2);
+  rows[1].dispatchEvent(new FakeEvent('mouseenter'));
+  enter();
+  assert.deepEqual(fills(), []);
+});
+
+test('a real hover or arrow key still selects the row Enter fills', async () => {
+  let box = await openLoginBox();
+  box.rows[1].dispatchEvent(trusted('mouseenter'));
+  box.enter();
+  assert.deepEqual(box.fills(), ['dummy-b']);
+
+  box = await openLoginBox();
+  box.env.document.dispatchEvent(trusted('keydown', { key: 'ArrowDown', target: box.field }));
+  box.enter();
+  assert.deepEqual(box.fills(), ['dummy-a']);
+});
+
+test('Enter never activates a selected row that is no longer visible', async () => {
+  const { env, field, rows, enter, fills } = await openLoginBox();
+  env.document.dispatchEvent(trusted('keydown', { key: 'ArrowDown', target: field }));
+  rows[0].computed.opacity = '0';
+  enter();
+  assert.deepEqual(fills(), []);
+});
+
+test('a code fill on a page without a code field gets an explicit no', () => {
+  const env = environment('https://account.example/verify');
+  let reply;
+  const kept = env.receivers[1]({ type: 'fillOtp', code: '000000', expectedOrigin: 'https://account.example', expectedUrl: 'https://account.example/verify' },
+    { id: env.chrome.runtime.id }, result => { reply = result; });
+  assert.equal(kept, true);
+  assert.equal(reply.ok, true);
+  assert.equal(reply.filled, false);
+
+  const otp = env.document.createElement('input');
+  otp.setAttribute('autocomplete', 'one-time-code');
+  env.document.body.appendChild(otp);
+  env.receivers[1]({ type: 'fillOtp', code: '000000', expectedOrigin: 'https://account.example', expectedUrl: 'https://account.example/verify' },
+    { id: env.chrome.runtime.id }, result => { reply = result; });
+  assert.equal(reply.filled, true);
+  assert.equal(otp.value, '000000');
+});

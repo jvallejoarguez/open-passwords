@@ -160,37 +160,48 @@ function pickSaveTarget({ host, existing, detected, generated, newPwCtx }) {
   return null;
 }
 
-// a reset can navigate away, so stash saves that arrived while locked and flush on unlock
-const pendingSaves = [];
+// a reset can navigate away, so stash saves that arrived while locked and flush on unlock.
+// keyed by host + username, newest wins, an explicit Lock drops them all
+const pendingSaves = new Map();
 function queuePendingSave(save) {
-  const k = `${save.host} ${(save.detected || "").toLowerCase()}`;
-  const i = pendingSaves.findIndex((p) => `${p.host} ${(p.detected || "").toLowerCase()}` === k);
-  if (i >= 0) pendingSaves.splice(i, 1);
-  save.expiresAt = Date.now() + PW_CACHE_TTL_MS;
-  pendingSaves.push(save);
-  setTimeout(() => {
-    const index = pendingSaves.indexOf(save);
-    if (index >= 0) pendingSaves.splice(index, 1);
-  }, PW_CACHE_TTL_MS);
-  while (pendingSaves.length > 10) pendingSaves.shift();
+  rememberEntry(pendingSaves, `${save.host} ${(save.detected || "").toLowerCase()}`, save, PW_CACHE_TTL_MS);
+  while (pendingSaves.size > 10) forgetEntry(pendingSaves, pendingSaves.keys().next().value);
 }
 async function flushPendingSaves() {
-  if (!client.ready || !pendingSaves.length) return;
-  const batch = pendingSaves.splice(0);
-  for (const s of batch) {
-    if (Date.now() >= s.expiresAt) continue;
+  if (!client.ready || !pendingSaves.size) return;
+  const generation = secretGeneration;
+  for (const key of [...pendingSaves.keys()]) {
+    const queued = readEntry(pendingSaves, key);
+    if (!queued) continue;
+    // the same entry must still be queued, unexpired, and in this unlock, after every wait
+    const live = () => generation === secretGeneration && client.ready && readEntry(pendingSaves, key) === queued;
+    if (!live()) return;
     try {
       let existing = [];
       try {
-        existing = (await client.getLoginNamesForURL(s.tabId, s.frameUrl))
+        existing = (await client.getLoginNamesForURL(queued.tabId, queued.frameUrl))
           .map((l) => l.username)
           .filter(Boolean);
       } catch {}
-      const target = pickSaveTarget({ ...s, existing });
-      if (target === null) continue;
-      await client.saveLogin(s.tabId, s.frameUrl, target, s.password);
+      if (!live()) continue;
+      const target = pickSaveTarget({ ...queued, existing });
+      if (target === null) {
+        forgetEntry(pendingSaves, key);
+        continue;
+      }
+      // checked again inside the native queue, a Lock or expiry while waiting there drops it
+      await client.saveLogin(queued.tabId, queued.frameUrl, target, queued.password, {
+        shouldSend: () => {
+          if (!live()) return false;
+          forgetEntry(pendingSaves, key);
+          return true;
+        },
+      });
     } catch {}
   }
+}
+function dropPendingSaves() {
+  clearEntries(pendingSaves);
 }
 
 // keeps internal spaces so distinct usernames arent merged
@@ -392,7 +403,8 @@ async function fillOneTimeCode(target, id) {
   const result = await deliver(target, { type: "fillOtp", code }, generation);
   checkSession(generation);
   forgetEntry(otpByDocument, documentKey(target));
-  return { filled: !!result?.filled, code };
+  // the code only goes back to the popup to show when the page had nowhere to put it
+  return result?.filled ? { filled: true } : { filled: false, code };
 }
 
 chrome.tabs.onRemoved.addListener((tabId) => {
@@ -618,6 +630,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
 
         case "disconnect":
+          // an explicit Lock means nothing typed earlier should reach the vault later
+          dropPendingSaves();
           client.disconnect();
           sendResponse({ ok: true, state: client.state });
           break;

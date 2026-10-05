@@ -7,27 +7,44 @@ import test from 'node:test';
 const source = readFileSync(new URL('../../src/background.js', import.meta.url), 'utf8')
   .replace('import { ApplePasswords, State } from "./protocol.js";', '');
 
+const tick = () => new Promise(resolve => setImmediate(resolve));
+
 function setup() {
   let listener, stateListener;
   let now = 1000;
   const timers = new Map();
-  const sends = [], queries = [];
+  const sends = [], queries = [], calls = [], saves = [];
   let onDelivery = () => {};
+  let delivery = { filled: true };
+  const hooks = { lookup: async () => {}, beforeSend: async () => {} };
   const frames = new Map();
   const id = 'audit-extension';
   const target = { tabId: 7, frameId: 0, documentId: 'doc-a', url: 'https://account.example/login', origin: 'https://account.example' };
   frames.set(target.documentId, target);
   let active = { id: 7, url: target.url };
   const code = { source: 'totp', username: 'dummy', domain: 'account.example', code: '123456' };
+  const setState = (state) => { client.ready = state === 'unlocked'; client.state = state; stateListener(state); };
   const client = {
     state: 'unlocked', ready: true, canFillOneTimeCodes: true,
     onStateChange(fn) { stateListener = fn; }, onOneTimeCodeAvailable() {},
-    async getLoginNamesForURL() { return [{ username: 'dummy' }]; },
+    async connect() { client.state = 'needs_pin'; },
+    async getLoginNamesForURL(tabId, url) { calls.push('getLoginNamesForURL'); await hooks.lookup(); return [{ username: 'dummy' }]; },
     async getPasswordForLoginName(tabId, url, login) {
+      calls.push('getPasswordForLoginName');
       queries.push({ tabId, url }); return { username: login.username, password: 'DUMMY_ONLY' };
     },
-    async getOneTimeCodes() { return { entries: [code], requiresAuth: false }; },
-    async readOneTimeCode() { return [code]; },
+    async getOneTimeCodes() { calls.push('getOneTimeCodes'); return { entries: [code], requiresAuth: false }; },
+    async readOneTimeCode() { calls.push('readOneTimeCode'); return [code]; },
+    // stands in for the native queue: shouldSend is asked last, right before the helper would see the password
+    async saveLogin(tabId, url, username, password, options = {}) {
+      calls.push('saveLogin');
+      await hooks.beforeSend();
+      if (options.shouldSend && !options.shouldSend()) return false;
+      saves.push({ url, username, password });
+      return true;
+    },
+    async verifyPin() { setState('unlocked'); },
+    disconnect() { setState('disconnected'); },
   };
   const event = () => ({ addListener() {} });
   const chrome = {
@@ -47,8 +64,8 @@ function setup() {
         }
         sends.push({ tabId, msg, options });
         await onDelivery();
-        if (typeof options === 'function') options({ filled: true });
-        return { filled: true };
+        if (typeof options === 'function') options(delivery);
+        return delivery;
       },
     },
   };
@@ -61,23 +78,52 @@ function setup() {
   vm.runInContext(source, context);
   const ui = { id, url: `chrome-extension://${id}/src/popup.html` };
   const sender = t => ({ id, tab: active, frameId: t.frameId, documentId: t.documentId, url: t.url, origin: t.origin });
-  return { target, client, code, frames, sends, queries, context,
+  return { target, client, code, frames, sends, queries, calls, saves, hooks, context,
     onDelivery(fn) { onDelivery = fn; },
+    setDelivery(result) { delivery = result; },
     send: (msg, from = ui) => new Promise(resolve => listener(msg, from, resolve)), sender,
     navigate(t) { frames.clear(); frames.set(t.documentId, t); active = { id: t.tabId, url: t.url }; },
-    lock() { client.ready = false; client.state = 'needs_pin'; stateListener('needs_pin'); },
+    lock() { setState('needs_pin'); },
+    timerCount: () => timers.size,
+    pending: () => vm.runInContext('pendingSaves.size ?? pendingSaves.length', context),
     advance(ms) { now += ms; for (const [key, timer] of [...timers]) if (timer.at <= now) { timers.delete(key); timer.fn(); } },
   };
 }
 
-test('refresh never fetches or fills credentials on an HTTP navigation', async () => {
+test('refresh handlers never read or deliver secrets for an HTTP page', async () => {
   const e = setup();
   await e.send({ type: 'fillOnPage', target: e.target, loginName: { username: 'dummy' } });
-  e.navigate({ ...e.target, documentId: 'http-doc', url: 'http://account.example/login', origin: 'http://account.example' });
-  const before = e.queries.length;
-  const response = await e.send({ type: 'refreshAndRefill' });
-  assert.notEqual(response.refilled, true);
-  assert.equal(e.queries.length, before);
+  const list = await e.send({ type: 'getOneTimeCodes', target: e.target });
+  const http = { ...e.target, documentId: 'http-doc', url: 'http://account.example/login', origin: 'http://account.example' };
+  e.navigate(http);
+  e.calls.length = 0;
+  e.sends.length = 0;
+
+  // what the popup refresh does now: clear, re-resolve the page, reload lists, then any fill the user picks
+  assert.equal((await e.send({ type: 'clearCache' })).ok, true);
+  for (const msg of [
+    { type: 'getPageTarget' },
+    { type: 'getLogins', target: http },
+    { type: 'getOneTimeCodes', target: http },
+    { type: 'fillOnPage', target: http, loginName: { username: 'dummy' } },
+    { type: 'fillOneTimeCode', target: http, id: list.rows[0].id },
+    // the HTTPS target the popup held before the downgrade
+    { type: 'getLogins', target: e.target },
+    { type: 'fillOnPage', target: e.target, loginName: { username: 'dummy' } },
+  ]) {
+    assert.equal((await e.send(msg)).ok, false, msg.type);
+  }
+  for (const type of ['inlineLogins', 'inlineFill', 'inlineOneTimeCodes', 'inlineFillOneTimeCode']) {
+    const response = await e.send({ type, loginName: { username: 'dummy' }, id: list.rows[0].id }, e.sender(http));
+    assert.equal(response.ok, false, type);
+  }
+  // the removed refresh-and-refill endpoint stays gone
+  const legacy = await e.send({ type: 'refreshAndRefill' });
+  assert.equal(legacy.ok, false);
+  assert.notEqual(legacy.refilled, true);
+
+  assert.deepEqual(e.calls, []);
+  assert.equal(e.sends.length, 0);
 });
 
 test('content scripts cannot submit pairing PINs or request challenges', async () => {
@@ -161,4 +207,88 @@ test('valid same-document OTP fill works, with no account fallback', async () =>
   r = await e.send({ type: 'fillOneTimeCode', target: e.target, id: list.rows[0].id });
   assert.equal(r.ok, false);
   assert.equal(e.sends.length, 0);
+});
+
+test('a filled OTP is never returned to the popup', async () => {
+  const e = setup();
+  const list = await e.send({ type: 'getOneTimeCodes', target: e.target });
+  const r = await e.send({ type: 'fillOneTimeCode', target: e.target, id: list.rows[0].id });
+  assert.equal(r.filled, true);
+  assert.equal(JSON.stringify(r).includes(e.code.code), false);
+});
+
+test('a page with no code field answers no, so only the popup can show the code', async () => {
+  const e = setup();
+  e.setDelivery({ ok: true, filled: false, error: 'no code field' });
+  const list = await e.send({ type: 'getOneTimeCodes', target: e.target });
+  const r = await e.send({ type: 'fillOneTimeCode', target: e.target, id: list.rows[0].id });
+  assert.equal(r.ok, true);
+  assert.equal(r.filled, false);
+  assert.equal(r.code, e.code.code);
+
+  // the page's own inline request never gets the code back
+  const inline = await e.send({ type: 'inlineOneTimeCodes' }, e.sender(e.target));
+  const reply = await e.send({ type: 'inlineFillOneTimeCode', id: inline.rows[0].id }, e.sender(e.target));
+  assert.equal(reply.filled, false);
+  assert.equal(JSON.stringify(reply).includes(e.code.code), false);
+});
+
+const deferredSave = { type: 'resolveSave', username: 'dummy', password: 'DUMMY_ONLY', newPwCtx: true };
+
+test('a new-password save made while locked is sent once after the user unlocks', async () => {
+  const e = setup();
+  e.lock();
+  assert.equal((await e.send(deferredSave, e.sender(e.target))).locked, true);
+  assert.equal(e.pending(), 1);
+  assert.equal(e.saves.length, 0);
+
+  assert.equal((await e.send({ type: 'verifyPin', pin: '000000' })).ok, true);
+  await tick();
+  assert.deepEqual(e.saves.map(s => s.password), ['DUMMY_ONLY']);
+  assert.equal(e.pending(), 0);
+  assert.equal(e.timerCount(), 0);
+});
+
+test('Lock drops deferred saves and their timers, so a later unlock saves nothing', async () => {
+  const e = setup();
+  e.lock();
+  await e.send(deferredSave, e.sender(e.target));
+  assert.equal(e.pending(), 1);
+  assert.equal(e.timerCount(), 1);
+
+  await e.send({ type: 'disconnect' });
+  assert.equal(e.pending(), 0);
+  assert.equal(e.timerCount(), 0);
+
+  await e.send({ type: 'verifyPin', pin: '000000' });
+  await tick();
+  assert.equal(e.calls.includes('saveLogin'), false);
+  assert.equal(e.saves.length, 0);
+});
+
+test('deferred saves expire, including while the unlock lookup is still running', async () => {
+  const e = setup();
+  e.lock();
+  await e.send(deferredSave, e.sender(e.target));
+  e.advance(120_001);
+  assert.equal(e.pending(), 0);
+
+  await e.send(deferredSave, e.sender(e.target));
+  e.hooks.lookup = async () => e.advance(120_001);
+  await e.send({ type: 'verifyPin', pin: '000000' });
+  await tick();
+  assert.equal(e.calls.includes('saveLogin'), false);
+  assert.equal(e.saves.length, 0);
+});
+
+test('Lock while a deferred save waits in the native queue stops it before the helper', async () => {
+  const e = setup();
+  e.lock();
+  await e.send(deferredSave, e.sender(e.target));
+  e.hooks.beforeSend = () => e.send({ type: 'disconnect' });
+  await e.send({ type: 'verifyPin', pin: '000000' });
+  await tick();
+  assert.equal(e.calls.includes('saveLogin'), true);
+  assert.equal(e.saves.length, 0);
+  assert.equal(e.pending(), 0);
 });
