@@ -4,87 +4,109 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <link rel="stylesheet" href="popup.css" />
-    <title>Open Passwords</title>
+    <title>Open Passwords — Javier</title>
   </head>
   <body>
     <header>
-      <img src="../icons/icon48.png" alt="" width="20" height="20" />
-      <h1>Open Passwords</h1>
-      <kbd title="Show saved logins">⌘⇧.</kbd>
-      <button id="refresh" class="icon" title="Refresh passwords" aria-label="Refresh passwords" hidden>&#x21bb;</button>
-      <span id="dot" class="dot" title="status"></span>
+      <img class="app-icon" src="../icons/keychain.svg" alt="" width="40" height="40" />
+      <div class="app-title"><h1>Passwords</h1><p>Open Passwords · Javier</p></div>
+      <button id="refresh" class="icon" title="Refresh passwords" aria-label="Refresh passwords" hidden>
+        <svg class="glyph" aria-hidden="true"><use href="../icons/ui.svg#refresh" /></svg>
+      </button>
     </header>
 
     <main>
-      <!-- No native helper -->
-      <section id="view-nohelper" hidden>
-        <p class="msg">
-          Couldn't reach Apple's password helper. This needs macOS 14+ with the
-          Passwords app, and the extension must run with Apple's accepted ID.
-        </p>
+      <section id="view-nohelper" class="state-view" hidden>
+        <div class="state-symbol"><svg class="glyph" aria-hidden="true"><use href="../icons/ui.svg#unavailable" /></svg></div>
+        <h2>Connect to Apple Passwords</h2>
+        <p class="msg">Couldn't reach Apple's password helper. This needs macOS 14+ with the Passwords app, and the extension must run with Apple's accepted ID.</p>
       </section>
 
-      <!-- Needs PIN -->
-      <section id="view-pin" hidden>
-        <p class="msg">
-          A verification code was generated on your Mac. Enter it to grant access.
-        </p>
-        <input id="pin" type="password" aria-label="Six-digit pairing code" inputmode="numeric" autocomplete="off" maxlength="6" placeholder="••••••" />
-        <button id="verify" class="primary">Unlock</button>
+      <section id="view-pin" class="state-view" hidden>
+        <img class="unlock-icon" src="../icons/keychain.svg" alt="" width="76" height="76" />
+        <h2>Unlock your passwords</h2>
+        <p class="msg">Enter the six-digit verification code shown on your Mac to connect to Apple Passwords.</p>
+        <input id="pin" type="password" aria-label="Six-digit pairing code" aria-describedby="pin-error" inputmode="numeric" autocomplete="off" maxlength="6" placeholder="••••••" />
+        <button id="verify" class="primary">Unlock Passwords</button>
         <button id="newcode" class="link">Request a new code</button>
-        <p id="pin-error" class="error" hidden></p>
+        <p id="pin-error" class="error" role="alert" hidden></p>
       </section>
 
-      <!-- Connecting -->
-      <section id="view-connecting" hidden>
-        <p class="msg">Connecting to Apple Passwords…</p>
+      <section id="view-connecting" class="state-view" hidden>
+        <img class="unlock-icon" src="../icons/keychain.svg" alt="" width="76" height="76" />
+        <h2>Connecting to your Mac</h2>
+        <p class="msg" role="status">Connecting to Apple Passwords…</p>
+        <span class="spinner" aria-hidden="true"></span>
       </section>
 
-      <!-- Unlocked: logins for current site -->
       <section id="view-unlocked" hidden>
-        <p id="site" class="site"></p>
-        <input id="search" type="search" aria-label="Search logins on this site" placeholder="Search logins on this site" autocomplete="off" />
-        <p id="search-empty" class="msg" hidden>No matching logins.</p>
-        <ul id="logins" class="logins"></ul>
-        <p id="nologins" class="msg" hidden>No saved passwords for this site.</p>
-        <!-- verification codes the vault holds for this site (TOTP generators, Messages) -->
-        <ul id="codes" class="logins codes" hidden></ul>
-        <p id="refresh-note" class="note" hidden></p>
-        <!-- hand-offs to the Passwords app: the place for notes, editing, and new logins -->
+        <div class="site-context">
+          <span class="site-symbol"><svg class="glyph" aria-hidden="true"><use href="../icons/ui.svg#globe" /></svg></span>
+          <div><span class="site-label">This website</span><p id="site" class="site"></p></div>
+        </div>
+        <div class="search-field">
+          <svg class="glyph" aria-hidden="true"><use href="../icons/ui.svg#search" /></svg>
+          <input id="search" type="search" aria-label="Search logins on this site" placeholder="Search this website" autocomplete="off" />
+        </div>
+        <h2 class="section-title">Saved passwords</h2>
+        <p id="search-empty" class="empty-state" hidden>No matching logins. Try another name.</p>
+        <ul id="logins" class="logins" aria-label="Saved passwords"></ul>
+        <p id="nologins" class="empty-state" hidden>No saved passwords for this site.</p>
+        <h2 class="section-title codes-title">Verification codes</h2>
+        <ul id="codes" class="logins codes" aria-label="Verification codes" hidden></ul>
+        <p id="refresh-note" class="note" role="status" hidden></p>
         <div id="app-links" class="app-links">
-          <button id="open-app" class="link">Open in Passwords app</button>
-          <button id="new-login" class="link" hidden>New login in Passwords app…</button>
-          <button id="setup-totp" class="link" hidden>Set up verification code in Passwords…</button>
+          <button id="open-app" class="app-link">
+            <svg class="glyph" aria-hidden="true"><use href="../icons/ui.svg#key" /></svg>
+            <span>Open in Passwords app</span>
+            <svg class="glyph trailing" aria-hidden="true"><use href="../icons/ui.svg#external" /></svg>
+          </button>
+          <button id="new-login" class="app-link" hidden>
+            <svg class="glyph" aria-hidden="true"><use href="../icons/ui.svg#plus" /></svg>
+            <span>New login in Passwords app…</span>
+            <svg class="glyph trailing" aria-hidden="true"><use href="../icons/ui.svg#chevron" /></svg>
+          </button>
+          <button id="setup-totp" class="app-link" hidden>
+            <svg class="glyph" aria-hidden="true"><use href="../icons/ui.svg#code" /></svg>
+            <span>Set up verification code…</span>
+            <svg class="glyph trailing" aria-hidden="true"><use href="../icons/ui.svg#chevron" /></svg>
+          </button>
         </div>
       </section>
     </main>
 
-    <!-- Footer: toggles for the browser's own password/autofill features -->
     <footer>
-      <div class="footer-actions"><details id="settings"><summary>Settings</summary>
-      <label id="pm-row" class="switch-row" hidden>
-        <span>Hide browser save-password bubble<span id="pm-note" class="subnote"></span></span>
-        <input type="checkbox" id="pm-toggle" class="switch" />
-      </label>
-      <label id="policy-row" class="switch-row">
-        <span>Hide browser password manager entirely<span id="policy-note" class="subnote"></span></span>
-        <input type="checkbox" id="policy-toggle" class="switch" />
-      </label>
-      <label id="af-row" class="switch-row" hidden>
-        <span>Hide browser autofill suggestions<span id="af-note" class="subnote"></span></span>
-        <input type="checkbox" id="af-toggle" class="switch" />
-      </label>
-      <label id="pk-row" class="switch-row">
-        <span>Hide passkey autofill</span>
-        <input type="checkbox" id="pk-toggle" class="switch" />
-      </label>
-      <label id="autopair-row" class="switch-row">
-        <span>Enter the pairing code for me<span id="autopair-note" class="subnote"></span></span>
-        <input type="checkbox" id="autopair-toggle" class="switch" />
-      </label>
-      </details><button id="lock" class="link" hidden>Lock</button></div>
+      <div class="connection-status" role="status"><span id="dot" class="dot"></span><span id="status-text">Connecting to Apple Passwords</span></div>
+      <div class="footer-actions">
+        <details id="settings">
+          <summary><svg class="glyph" aria-hidden="true"><use href="../icons/ui.svg#settings" /></svg>Settings<svg class="glyph disclosure" aria-hidden="true"><use href="../icons/ui.svg#chevron" /></svg></summary>
+          <div class="settings-panel">
+            <label id="pm-row" class="switch-row" hidden>
+              <span>Hide browser save-password bubble<span id="pm-note" class="subnote"></span></span>
+              <input type="checkbox" id="pm-toggle" class="switch" />
+            </label>
+            <label id="policy-row" class="switch-row">
+              <span>Hide browser password manager entirely<span id="policy-note" class="subnote"></span></span>
+              <input type="checkbox" id="policy-toggle" class="switch" />
+            </label>
+            <label id="af-row" class="switch-row" hidden>
+              <span>Hide browser autofill suggestions<span id="af-note" class="subnote"></span></span>
+              <input type="checkbox" id="af-toggle" class="switch" />
+            </label>
+            <label id="pk-row" class="switch-row">
+              <span>Hide passkey autofill</span>
+              <input type="checkbox" id="pk-toggle" class="switch" />
+            </label>
+            <label id="autopair-row" class="switch-row">
+              <span>Enter the pairing code for me<span id="autopair-note" class="subnote"></span></span>
+              <input type="checkbox" id="autopair-toggle" class="switch" />
+            </label>
+          </div>
+        </details>
+        <button id="lock" class="link" hidden><svg class="glyph" aria-hidden="true"><use href="../icons/ui.svg#lock" /></svg>Lock</button>
+      </div>
+      <p class="shortcut-hint"><kbd>⌘ ⇧ .</kbd><span>Show autofill on a website</span></p>
     </footer>
-
     <script type="module" src="popup.js"></script>
   </body>
 </html>

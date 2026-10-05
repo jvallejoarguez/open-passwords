@@ -445,7 +445,7 @@ function glassify(el) {
     overflow: "hidden",
     font: `13px/1.4 ${UI_FONT}`,
   });
-  el.style.setProperty("background", "light-dark(rgba(252,252,253,0.72), rgba(28,28,30,0.66))");
+  el.style.setProperty("background", "light-dark(rgba(250,250,252,0.96), rgba(36,36,38,0.96))");
   el.style.setProperty("border-color", "light-dark(rgba(0,0,0,0.10), rgba(255,255,255,0.14))");
   el.style.setProperty(
     "box-shadow",
@@ -467,13 +467,20 @@ function buildSuggestionBox(field) {
     zIndex: "2147483647",
   });
   const header = document.createElement("div");
-  header.textContent = "Open Passwords";
+  const icon = document.createElement("img");
+  icon.src = chrome.runtime.getURL("icons/icon32.png");
+  icon.alt = "";
+  Object.assign(icon.style, { width: "16px", height: "16px", flex: "none" });
+  const title = document.createElement("span");
+  title.textContent = "Open Passwords";
+  header.append(icon, title);
   Object.assign(header.style, {
-    padding: "7px 12px",
-    fontSize: "11px",
+    display: "flex",
+    alignItems: "center",
+    gap: "7px",
+    padding: "10px 12px",
+    fontSize: "12px",
     fontWeight: "600",
-    letterSpacing: "0.02em",
-    opacity: "0.55",
     borderBottom: "1px solid rgba(128,128,128,0.18)",
   });
   box.appendChild(header);
@@ -586,7 +593,7 @@ function appendLoginRows(box, field, logins) {
     const row = document.createElement("div");
     row.textContent = login.username || "(no username)";
     Object.assign(row.style, {
-      padding: "8px 12px",
+      padding: "11px 14px",
       cursor: "pointer",
       whiteSpace: "nowrap",
       overflow: "hidden",

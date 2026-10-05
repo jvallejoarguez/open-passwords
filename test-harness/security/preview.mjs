@@ -5,7 +5,8 @@ import { readFileSync } from 'node:fs';
 
 const root = new URL('../../', import.meta.url);
 const mock = `
-let state = new URLSearchParams(location.search).has('pin') ? 'needs_pin' : 'unlocked';
+const params = new URLSearchParams(location.search);
+let state = params.has('pin') ? 'needs_pin' : params.has('nohelper') ? 'no_helper' : params.has('connecting') ? 'disconnected' : 'unlocked';
 const target = { tabId: 7, frameId: 0, documentId: 'dummy-doc', url: 'https://example.test/login', origin: 'https://example.test' };
 const note = document.createElement('p');
 note.style.cssText = 'padding:12px;font:12px system-ui;color:#777';
@@ -17,10 +18,10 @@ window.chrome = {
     sendNativeMessage(host, body, cb) { cb({ error: 'Preview: helper disabled' }); },
     sendMessage(msg, cb) {
       let result = { ok: true };
-      if (msg.type === 'getState' || msg.type === 'requestChallenge') result = { ok: true, state, caps: {} };
+      if (msg.type === 'getState' || msg.type === 'requestChallenge') result = { ok: true, state, caps: { newPasswordSheet: true } };
       if (msg.type === 'getPageTarget') result.target = target;
-      if (msg.type === 'getLogins') result.logins = [{ username: 'personal@example.test' }, { username: 'work@example.test' }];
-      if (msg.type === 'getOneTimeCodes') result.rows = [{ id: 'dummy-otp', source: 'totp', username: 'personal@example.test', domain: 'example.test' }];
+      if (msg.type === 'getLogins') result.logins = params.has('empty') ? [] : [{ username: 'personal@example.test' }, { username: 'work@example.test' }];
+      if (msg.type === 'getOneTimeCodes') result.rows = params.has('empty') ? [] : [{ id: 'dummy-otp', source: 'totp', username: 'personal@example.test', domain: 'example.test' }];
       if (msg.type === 'verifyPin') { state = 'unlocked'; result.state = state; }
       if (msg.type === 'fillOnPage' || msg.type === 'fillOneTimeCode') {
         note.textContent = 'Dummy action: ' + msg.type + ' ' + (msg.loginName?.username || msg.id);
@@ -37,6 +38,9 @@ const routes = new Map([
   ['/popup.css', ['src/popup.css', 'text/css']],
   ['/popup.js', ['src/popup.js', 'text/javascript']],
   ['/icons/icon48.png', ['icons/icon48.png', 'image/png']],
+  ['/icons/keychain.svg', ['icons/keychain.svg', 'image/svg+xml']],
+  ['/icons/keychain-mini.svg', ['icons/keychain-mini.svg', 'image/svg+xml']],
+  ['/icons/ui.svg', ['icons/ui.svg', 'image/svg+xml']],
 ]);
 const server = createServer((req, res) => {
   const path = new URL(req.url, 'http://127.0.0.1').pathname;

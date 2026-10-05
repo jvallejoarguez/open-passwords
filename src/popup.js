@@ -181,6 +181,11 @@ function setDot(state) {
   if (state === "unlocked") dot.classList.add("ok");
   else if (state === "needs_pin") dot.classList.add("warn");
   else if (state === "no_helper") dot.classList.add("err");
+  document.getElementById("status-text").textContent = {
+    unlocked: "Connected to Apple Passwords",
+    needs_pin: "Apple Passwords is locked",
+    no_helper: "Apple Passwords is unavailable",
+  }[state] || "Connecting to Apple Passwords";
 }
 
 function send(msg) {
@@ -242,6 +247,16 @@ async function render(state) {
   show("connecting");
 }
 
+function credentialIcon(name) {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("class", "glyph credential-icon");
+  svg.setAttribute("aria-hidden", "true");
+  const use = document.createElementNS("http://www.w3.org/2000/svg", "use");
+  use.setAttribute("href", `../icons/ui.svg#${name}`);
+  svg.appendChild(use);
+  return svg;
+}
+
 async function renderLogins(revision = viewRevision) {
   const target = pageTarget;
   document.getElementById("site").textContent = pageTarget ? new URL(pageTarget.url).host : "This page";
@@ -269,15 +284,17 @@ async function renderLogins(revision = viewRevision) {
     const u = document.createElement("span");
     u.className = "u";
     u.textContent = login.username || "(no username)";
+    u.title = u.textContent;
     const fill = document.createElement("button");
     fill.textContent = "Fill";
+    fill.setAttribute("aria-label", `Fill password for ${u.textContent}`);
     fill.addEventListener("click", async () => {
       fill.disabled = true;
       const r = await pageMessage({ type: "fillOnPage", loginName: login }, target);
       if (r?.ok && r.filled) window.close();
       else { fill.disabled = false; flashNote(r?.error || "Focus a login field and try again."); }
     });
-    li.append(u, fill);
+    li.append(credentialIcon("key"), u, fill);
     list.appendChild(li);
   }
   filterLogins();
@@ -300,9 +317,7 @@ async function renderCodes(revision = viewRevision) {
     label.className = "code-label";
     label.textContent =
       row.source === "totp"
-        ? row.domain
-          ? `Verification code for ${row.domain}`
-          : "Verification code"
+        ? row.domain || "Verification code"
         : "Code from Messages";
     text.appendChild(label);
     if (row.username) {
@@ -313,6 +328,7 @@ async function renderCodes(revision = viewRevision) {
     }
     const fill = document.createElement("button");
     fill.textContent = "Fill";
+    fill.setAttribute("aria-label", `Fill verification code for ${row.username || row.domain || "this site"}`);
     fill.addEventListener("click", async () => {
       fill.disabled = true;
       const r = await pageMessage({ type: "fillOneTimeCode", id: row.id }, target);
@@ -327,7 +343,7 @@ async function renderCodes(revision = viewRevision) {
       fill.disabled = false;
       flashNote(r?.error ? `Couldn't read the code: ${r.error}` : "Couldn't read the code");
     });
-    li.append(text, fill);
+    li.append(credentialIcon("code"), text, fill);
     list.appendChild(li);
   }
   list.hidden = false;
